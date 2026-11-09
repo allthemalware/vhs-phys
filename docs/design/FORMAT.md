@@ -84,6 +84,11 @@ the default is `{"w": "thin", "b": "norm", "fill": "none"}`.
   `w / (0.602 * size + tracking)` characters.
 - The TV glyph's `screen` is the window of the live preview. It must be at least 200 x 150 and 4:3; the engine
   enlarges it over the whole schematic when the user clicks it.
+- **Text placement.** The engine prints a block's `title` at (x + 8, y + 15) in the norm tier at the theme size and its
+  `caption` at (x + 8, y + h - 7) in the dim tier one pixel smaller (so the theme size is at least 12 and the caption
+  must fit in `w - 16` px); a wire's `label` with its left edge and baseline at `label_at`, norm tier, theme size.
+  No text may overlap other text, a control row or a wire, none may straddle a block frame (it sits wholly inside a
+  block or wholly clear of it), none is `faint`, and none is smaller than 11 px after the instance's `scale`.
 - `animation`: `pulse_speed` (px per second), `pulse_spacing` (px between pulses), `reel_rpm`,
   `flicker` (fraction of brightness), `boot_ms` (the screen draws itself line by line), `refresh_flash_ms`
   (a value brightens for this long after it changes).

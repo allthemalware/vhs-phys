@@ -159,7 +159,7 @@ def test_glyph_primitives_are_well_formed():
             assert kind in PRIMS, f"{name}: unknown primitive {kind}"
             style = args[-1] if args and isinstance(args[-1], dict) else None
             args = args[:-1] if style is not None else args
-            assert len(args) == PRIMS[kind] or (kind == "text" and len(args) in (4, 5)), f"{name}: {kind} takes {PRIMS[kind]} arguments"
+            assert len(args) == PRIMS[kind], f"{name}: {kind} takes {PRIMS[kind]} arguments"
             if style:
                 assert set(style) <= set(STYLE_KEYS) | {"dash"}, f"{name}: style {style}"
                 assert all(style[k] in STYLE_KEYS[k] for k in style if k in STYLE_KEYS), f"{name}: style {style}"
@@ -243,6 +243,96 @@ def test_the_hint_line_has_a_band_of_its_own():
         assert not (band[0] <= t["x"] <= band[0] + band[2] and band[1] - 4 <= t["y"] <= band[1] + band[3] + 4), f"the label {t['text']!r} is in the hint band"
     for w in LAYOUT["wires"]:
         assert all(not (band[1] - 2 <= y <= band[1] + band[3] + 2) for _, y in w["points"]), f"{w['id']} runs into the hint band"
+
+
+def _box(x, baseline, s, size, align="l"):
+    """The area a piece of text covers: monospace advance plus tracking, cap height above the baseline."""
+    width = len(s) * (ADVANCE * size + LAYOUT["theme"]["font"]["tracking"])
+    left = x - width / 2 if align == "c" else x - width if align == "r" else x
+    return (left, baseline - 0.8 * size, width, size)
+
+
+def _text_items():
+    """Everything the engine prints, as (name, box, brightness tier, effective size). The engine puts a block's
+    title at (x + 8, y + 15) at the theme size in the norm tier, its caption at (x + 8, y + h - 7) one pixel
+    smaller in the dim tier, and a wire's label at `label_at` at the theme size in the norm tier."""
+    fs = LAYOUT["theme"]["font"]["size"]
+    t = LAYOUT["title"]
+    items = [("title", _box(t["x"], t["y"], t["text"], t["size"]), "hot", t["size"])]
+    for b in LAYOUT["blocks"]:
+        if b["frame"] == "none":
+            continue
+        items.append((f"{b['id']} title", _box(b["x"] + 8, b["y"] + 15, b["title"], fs), "norm", fs))
+        if b["caption"]:
+            items.append((f"{b['id']} caption", _box(b["x"] + 8, b["y"] + b["h"] - 7, b["caption"], fs - 1), "dim", fs - 1))
+    for w in LAYOUT["wires"]:
+        if w["label"]:
+            items.append((f"wire {w['id']} label {w['label']!r}", _box(w["label_at"][0], w["label_at"][1], w["label"], fs), "norm", fs))
+    for t in LAYOUT.get("labels", []):
+        items.append((f"label {t['text']!r}", _box(t["x"], t["y"], t["text"], t["size"], t.get("align", "l")), t.get("b", "norm"), t["size"]))
+    for i in LAYOUT["instances"]:
+        for p in GLYPHS[i["glyph"]]["prims"]:
+            if p[0] == "text":
+                style = p[-1] if isinstance(p[-1], dict) else {}
+                size = p[4] * i["scale"]
+                items.append((f"{i['glyph']} text {p[3]!r}", _box(i["x"] + p[1] * i["scale"], i["y"] + p[2] * i["scale"], p[3], size, p[5]), style.get("b", "norm"), size))
+    return items
+
+
+def test_every_piece_of_text_is_readable_and_never_faint():
+    assert LAYOUT["theme"]["font"]["size"] >= 12, "captions are one pixel smaller than the theme size and must stay at 11 or more"
+    problems = []
+    for name, box, tier, size in _text_items():
+        if size < 11:
+            problems.append(f"{name}: {size:.1f} px is too small")
+        if tier == "faint":
+            problems.append(f"{name}: faint text (about 2 : 1 against the background) cannot be read")
+        if not inside(box, (0, 0, W, H), MARGIN):
+            problems.append(f"{name} leaves the canvas")
+    assert not problems, "\n".join(problems)
+
+
+def test_captions_fit_inside_their_block():
+    problems = []
+    for b in LAYOUT["blocks"]:
+        if b["caption"]:
+            width = _box(b["x"] + 8, b["y"] + b["h"] - 7, b["caption"], LAYOUT["theme"]["font"]["size"] - 1)[2]
+            room = b["w"] - 16
+            if width > room:
+                fits = int(room // (ADVANCE * 11 + LAYOUT["theme"]["font"]["tracking"]))
+                problems.append(f"{b['id']}: the caption is {width:.0f} px wide and the block leaves {room} px ({len(b['caption'])} characters, at most {fits} fit)")
+    assert not problems, "\n".join(problems)
+
+
+def test_no_two_pieces_of_text_overlap():
+    items = [(n, b) for n, b, _, _ in _text_items()] + [(f"the row of {c['id']}", rect_of(c, ROW_H)) for c in LAYOUT["controls"]]
+    h = LAYOUT["hint"]
+    items.append(("the hint band", (h["x"], h["y"] - h["size"], h["w"], h["size"] + 5)))
+    problems = [f"{na} overlaps {nb}" for i, (na, a) in enumerate(items) for nb, b in items[i + 1 :] if overlap(a, b)]
+    assert not problems, "\n".join(problems)
+
+
+def test_text_never_straddles_a_block_frame():
+    problems = []
+    for name, box, _, _ in _text_items():
+        for b in LAYOUT["blocks"]:
+            if b["frame"] == "none" or name.startswith(f"{b['id']} "):
+                continue
+            if not (inside(box, rect_of(b), 2) or not overlap(box, rect_of(b), gap=2)):
+                problems.append(f"{name} runs across the frame of {b['id']}: keep it wholly inside the block or wholly clear of it")
+    assert not problems, "\n".join(problems)
+
+
+def test_wires_do_not_run_through_text():
+    boxes = [(n, bx) for n, bx, _, _ in _text_items()]
+    problems = set()
+    for w in LAYOUT["wires"]:
+        for a, b in zip(w["points"], w["points"][1:]):
+            for x, y in _segment_points(a, b):
+                for name, r in boxes:
+                    if r[0] - 2 <= x <= r[0] + r[2] + 2 and r[1] - 2 <= y <= r[1] + r[3] + 2:
+                        problems.add(f"{w['id']} runs through {name}")
+    assert not problems, "\n".join(sorted(problems))
 
 
 def test_the_palette_is_one_phosphor():
