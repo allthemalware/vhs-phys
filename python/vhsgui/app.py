@@ -262,6 +262,7 @@ class MainWindow(QMainWindow):
 
         self._spins: dict[str, QDoubleSpinBox] = {}
         self._checks: dict[str, QCheckBox] = {}
+        self._field_labels: list[QLabel] = []
 
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(*WINDOW_SIZE)
@@ -343,18 +344,24 @@ class MainWindow(QMainWindow):
         for group in self._build_condition_groups():
             column.addWidget(group)
         column.addWidget(self._build_advanced_group())
-        column.addWidget(self._build_output_group())
         column.addStretch(1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setMinimumWidth(LEFT_MIN_WIDTH)
         scroll.setWidget(controls)
+
+        left = QWidget()
+        left.setMinimumWidth(LEFT_MIN_WIDTH)
+        left_layout = QVBoxLayout(left)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(6)
+        left_layout.addWidget(scroll, 1)
+        left_layout.addWidget(self._build_output_group(), 0)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
-        splitter.addWidget(scroll)
+        splitter.addWidget(left)
         splitter.addWidget(self._build_preview_column())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
@@ -417,6 +424,10 @@ class MainWindow(QMainWindow):
                     self._add_float_field(spec, grid, row)
                 row += 1
             boxes.append(box)
+        if self._field_labels:
+            max_width = max(label.sizeHint().width() for label in self._field_labels)
+            for label in self._field_labels:
+                label.setMinimumWidth(max_width)
         return boxes
 
     def _add_bool_field(self, spec: FieldSpec, grid: QGridLayout, row: int) -> None:
@@ -428,7 +439,8 @@ class MainWindow(QMainWindow):
         self._checks[spec.key] = check
 
     def _add_float_field(self, spec: FieldSpec, grid: QGridLayout, row: int) -> None:
-        label = QLabel(f"{spec.label} ({spec.unit})" if spec.unit else spec.label)
+        label = QLabel(spec.label)
+        self._field_labels.append(label)
         slider = QSlider(Qt.Orientation.Horizontal)
         slider.setObjectName(f"slider_{spec.key}")
         slider.setRange(0, max(1, round((spec.hi - spec.lo) / spec.step)))
@@ -475,9 +487,9 @@ class MainWindow(QMainWindow):
 
     def _build_output_group(self) -> QGroupBox:
         box = QGroupBox("Output")
-        form = QFormLayout(box)
-        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        grid = QGridLayout(box)
+        grid.setColumnStretch(1, 1)
+        grid.setColumnStretch(3, 1)
 
         self.output_edit = QLineEdit()
         self.output_edit.setObjectName("outputEdit")
@@ -487,7 +499,8 @@ class MainWindow(QMainWindow):
         file_row = QHBoxLayout()
         file_row.addWidget(self.output_edit, 1)
         file_row.addWidget(self.browse_output_button)
-        form.addRow("File", file_row)
+        grid.addWidget(QLabel("File"), 0, 0)
+        grid.addLayout(file_row, 0, 1, 1, 3)
 
         self.start_spin = QDoubleSpinBox()
         self.start_spin.setObjectName("startSpin")
@@ -499,20 +512,25 @@ class MainWindow(QMainWindow):
             spin.setRange(0.0, UNKNOWN_DURATION_MAX_S)
             spin.setSuffix(" s")
         self.duration_spin.setSpecialValueText("to the end")
-        form.addRow("Start", self.start_spin)
-        form.addRow("Length", self.duration_spin)
+        grid.addWidget(QLabel("Start"), 1, 0)
+        grid.addWidget(self.start_spin, 1, 1)
+        grid.addWidget(QLabel("Length"), 1, 2)
+        grid.addWidget(self.duration_spin, 1, 3)
 
         self.size_combo = QComboBox()
         self.size_combo.setObjectName("sizeCombo")
         for text, size in SIZE_CHOICES:
             self.size_combo.addItem(text, size)
-        form.addRow("Size", self.size_combo)
+        grid.addWidget(QLabel("Size"), 2, 0)
+        grid.addWidget(self.size_combo, 2, 1)
 
         self.crf_spin = QSpinBox()
         self.crf_spin.setObjectName("crfSpin")
         self.crf_spin.setRange(0, CRF_MAX)
         self.crf_spin.setValue(DEFAULT_CRF)
-        form.addRow("Quality (CRF, lower is better)", self.crf_spin)
+        self.crf_spin.setToolTip("CRF: lower is better")
+        grid.addWidget(QLabel("Quality"), 2, 2)
+        grid.addWidget(self.crf_spin, 2, 3)
 
         self.render_button = QPushButton("Render")
         self.render_button.setObjectName("renderButton")
@@ -528,14 +546,14 @@ class MainWindow(QMainWindow):
         buttons.addWidget(self.render_button)
         buttons.addWidget(self.cancel_button)
         buttons.addWidget(self.open_button)
-        form.addRow(buttons)
+        grid.addLayout(buttons, 3, 0, 1, 4)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setObjectName("progressBar")
         self.progress_bar.setRange(0, PROGRESS_FULL)
         self.status_label = _wrapping_label("statusLabel")
-        form.addRow(self.progress_bar)
-        form.addRow(self.status_label)
+        grid.addWidget(self.progress_bar, 4, 0, 1, 4)
+        grid.addWidget(self.status_label, 5, 0, 1, 4)
         return box
 
     def _build_preview_column(self) -> QWidget:
