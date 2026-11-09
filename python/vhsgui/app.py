@@ -261,6 +261,7 @@ class MainWindow(QMainWindow):
 
         self._spins: dict[str, QDoubleSpinBox] = {}
         self._checks: dict[str, QCheckBox] = {}
+        self._choice_boxes: dict[str, QComboBox] = {}
         self._field_labels: list[QLabel] = []
 
         self.setWindowTitle(WINDOW_TITLE)
@@ -419,6 +420,8 @@ class MainWindow(QMainWindow):
                     continue
                 if spec.kind == "bool":
                     self._add_bool_field(spec, grid, row)
+                elif spec.kind == "choice":
+                    self._add_choice_field(spec, grid, row)
                 else:
                     self._add_float_field(spec, grid, row)
                 row += 1
@@ -436,6 +439,20 @@ class MainWindow(QMainWindow):
         check.toggled.connect(self._on_look_changed)
         grid.addWidget(check, row, 0, 1, 3)
         self._checks[spec.key] = check
+
+    def _add_choice_field(self, spec: FieldSpec, grid: QGridLayout, row: int) -> None:
+        label = QLabel(spec.label)
+        self._field_labels.append(label)
+        combo = QComboBox()
+        combo.setObjectName(f"field_{spec.key}")
+        for choice in spec.choices:
+            combo.addItem(choice.upper(), choice)
+        for widget in (label, combo):
+            widget.setToolTip(spec.help)
+        combo.currentIndexChanged.connect(self._on_look_changed)
+        grid.addWidget(label, row, 0)
+        grid.addWidget(combo, row, 1, 1, 2)
+        self._choice_boxes[spec.key] = combo
 
     def _add_float_field(self, spec: FieldSpec, grid: QGridLayout, row: int) -> None:
         label = QLabel(spec.label)
@@ -635,21 +652,29 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ the look
 
-    def _condition(self) -> dict[str, float | bool]:
-        values: dict[str, float | bool] = {}
+    def _condition(self) -> dict[str, float | bool | str]:
+        values: dict[str, float | bool | str] = {}
         for spec in CONDITION_FIELDS:
             if spec.kind == "bool":
                 values[spec.key] = self._checks[spec.key].isChecked()
+            elif spec.kind == "choice":
+                values[spec.key] = self._choice_boxes[spec.key].currentData()
             else:
                 values[spec.key] = self._spins[spec.key].value()
         return values
 
-    def _apply_condition(self, values: dict[str, float | bool]) -> None:
+    def _apply_condition(self, values: dict[str, float | bool | str]) -> None:
         self._loading = True
         try:
             for spec in CONDITION_FIELDS:
                 if spec.kind == "bool":
                     self._checks[spec.key].setChecked(bool(values.get(spec.key, False)))
+                elif spec.kind == "choice":
+                    combo = self._choice_boxes[spec.key]
+                    value = values.get(spec.key)
+                    if value is None and spec.choices:
+                        value = spec.choices[0]
+                    combo.setCurrentIndex(combo.findData(value))
                 else:
                     self._spins[spec.key].setValue(float(values.get(spec.key, spec.lo)))
         finally:
