@@ -204,7 +204,7 @@ crates/vhsphys-core   physics library (record, tape, head, mech, electronics, de
 crates/vhsphys-cli    `vhsphys` command line tool (ffmpeg pipes)
 python/vhsgui         desktop front end (PySide6) for the command line tool
 python/vhslab         reference physics, validation report, tuning and plotting tools
-docs/                 RESEARCH, ARCHITECTURE, PLUGIN, PERFORMANCE, TAPE_SPEEDS, COMPOSITE, AUDIO, images
+docs/                 RESEARCH, ARCHITECTURE, PLUGIN, PERFORMANCE, COMPARISON, TAPE_SPEEDS, COMPOSITE, AUDIO, images
 scripts/gallery.sh    regenerate the gallery images
 scripts/features.sh   regenerate the feature images
 ```
