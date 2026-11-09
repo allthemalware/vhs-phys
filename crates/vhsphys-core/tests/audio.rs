@@ -71,9 +71,34 @@ fn residual_rms(y: &[f32], f: f64) -> f64 {
     let r: Vec<f32> = y.iter().enumerate().map(|(n, v)| (*v as f64 - a * (2.0 * PI * f * n as f64 / RATE).cos() - b * (2.0 * PI * f * n as f64 / RATE).sin()) as f32).collect();
     rms(&r)
 }
+/// RMS of the noise left after excluding the tone at `f` and its close-in sidebands (within
+/// 20 Hz): how a noise meter with a notch reads a tone that went through a wobbling transport.
+/// The wow of a real deck smears the tone into sidebands a few hertz wide; that is wow, not
+/// hiss. Hann-windowed, so the skirts of the tone do not leak into the noise bins. Uses the
+/// first 2 s of `y` (0.5 Hz resolution).
+fn notched_noise_rms(y: &[f32], f: f64) -> f64 {
+    let n = 96_000usize;
+    assert!(y.len() >= n, "need 2 s of signal");
+    let hann = |i: usize| 0.5 - 0.5 * (2.0 * PI * i as f64 / n as f64).cos();
+    let wy: Vec<f64> = (0..n).map(|i| y[i] as f64 * hann(i)).collect();
+    let total: f64 = wy.iter().map(|v| v * v).sum();
+    let window_energy: f64 = (0..n).map(|i| hann(i).powi(2)).sum();
+    let (k0, span) = ((f * n as f64 / RATE).round() as i64, (20.0 * n as f64 / RATE).round() as i64);
+    let mut excluded = 0.0;
+    for k in k0 - span..=k0 + span {
+        let (mut re, mut im) = (0.0, 0.0);
+        for (i, v) in wy.iter().enumerate() {
+            let a = 2.0 * PI * ((k as f64 * i as f64 / n as f64) % 1.0);
+            re += v * a.cos();
+            im -= v * a.sin();
+        }
+        excluded += 2.0 * (re * re + im * im) / n as f64; // the mirror image at -f counts too
+    }
+    ((total - excluded).max(0.0) / window_energy).sqrt()
+}
 fn snr_db(p: &Params) -> f64 {
     let y = run(p, &tone(1000.0, 3.0, 0.1), 1, 0);
-    db(0.1 / 2f64.sqrt()) - db(residual_rms(&y[24_000..], 1000.0))
+    db(0.1 / 2f64.sqrt()) - db(notched_noise_rms(&y[24_000..], 1000.0))
 }
 /// Delay (seconds) of a pure tone, measured every 10 ms by complex demodulation over 20 ms.
 fn delay_series(y: &[f32], f0: f64) -> Vec<(f64, f64)> {
@@ -207,10 +232,14 @@ fn hum_is_the_supplys_ripple() {
 
 #[test]
 fn dirt_on_the_tape_dulls_the_high_frequencies_first() {
-    // 1 kHz and 8 kHz together; count 5 ms windows where only the 8 kHz drops
-    let both: Vec<f32> = tone(1000.0, 30.0, 0.1).iter().zip(tone(8000.0, 30.0, 0.1).iter()).map(|(a, b)| a + b).collect();
+    // 1 kHz and 8 kHz together on a stereo programme, read from the left track (350 um wide).
+    // A defect only covers part of the track width, so a 1 mm mono track shrugs off all but the
+    // biggest debris while a narrow stereo track loses most of its width to a particle of
+    // 150 um: count the 5 ms windows where only the 8 kHz drops.
+    let both: Vec<f32> = tone(1000.0, 60.0, 0.1).iter().zip(tone(8000.0, 60.0, 0.1).iter()).map(|(a, b)| a + b).collect();
+    let stereo: Vec<f32> = both.iter().flat_map(|v| [*v, *v]).collect();
     let events = |p: &Params| {
-        let y = run(p, &both, 1, 0);
+        let y: Vec<f32> = run(p, &stereo, 2, 0).iter().step_by(2).cloned().collect();
         let win = 240;
         let levels: Vec<(f64, f64)> = y[48_000..].chunks_exact(win).map(|c| (db(amp_at(c, 1000.0)), db(amp_at(c, 8000.0)))).collect();
         let mut hf: Vec<f64> = levels.iter().map(|l| l.1).collect();
@@ -229,9 +258,10 @@ fn dirt_on_the_tape_dulls_the_high_frequencies_first() {
         }
         count
     };
-    let dirty = events(&build("good", "[tape]\ndefects_per_mm2 = 10.0\n", 5));
+    let dirty = events(&build("good", "[tape]\ndefects_per_mm2 = 200.0\n", 5));
     let clean = events(&build("pristine", "[tape]\ndefects_per_mm2 = 0.0\n", 5));
-    assert!(dirty >= 3, "a dirty tape should dull the highs now and then: {dirty} events");
+    // over seeds 1 to 8 a tape this dirty gives 15 to 30 such windows a minute; a clean one none
+    assert!(dirty >= 5, "a dirty tape should dull the highs now and then: {dirty} events");
     assert_eq!(clean, 0, "a clean tape should not");
 }
 
@@ -283,4 +313,12 @@ fn the_measurement_helpers_are_sound() {
     assert!(residual_rms(&tone, 1000.0) < 1e-4);
     assert!((amp_at(&tone, 1000.0) - 0.1).abs() < 1e-3);
     assert!(pearson(&[1.0, 2.0, 3.0, 5.0], &[2.0, 4.1, 6.0, 9.9]) > 0.99);
+    // the notched noise meter does not count the wobble sidebands as noise, the plain one does
+    let mut hissy = y.clone();
+    for (n, v) in hissy.iter_mut().enumerate() {
+        *v += 0.002 * ((n as f64 * 12.9898).sin() * 43758.5453).fract() as f32; // deterministic white-ish noise
+    }
+    assert!(notched_noise_rms(&y[24_000..], 3000.0) < 1e-3, "a wobbling pure tone has no noise: {}", notched_noise_rms(&y[24_000..], 3000.0));
+    assert!(residual_rms(&y[24_000..], 3000.0) > 0.01, "the plain projection counts the wobble as noise");
+    assert!(notched_noise_rms(&hissy[24_000..], 3000.0) > 5e-4, "but the meter still reads real noise");
 }

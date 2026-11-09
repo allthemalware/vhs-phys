@@ -152,6 +152,51 @@ impl Tape {
         1.0 + (self.p.bathtub - 1.0) * ((-u_um / e).exp() + (-(l - u_um) / e).exp())
     }
 
+    /// Append the defects generated in cell `(iu, iv)`. Both the per-track and the per-band
+    /// queries use this one generator, so they always see the same tape.
+    fn cell_defects(&self, iu: i64, iv: i64, out: &mut Vec<Defect>) {
+        let mut rng = Rng::new(self.seed, STREAM_TAPE, iu.wrapping_mul(100_003).wrapping_add(iv));
+        let lam = self.p.defects_per_mm2 * CELL_U * CELL_V / 1.0e6 * self.bathtub((iu as f64 + 0.5) * CELL_U);
+        for _ in 0..rng.poisson(lam) {
+            let u = (iu as f64 + rng.uniform()) * CELL_U;
+            let v = (iv as f64 + rng.uniform()) * CELL_V;
+            let r = rng.power_law(self.p.size_alpha, self.p.r_min_um, self.p.r_max_um);
+            let is_void = rng.uniform() < self.p.void_fraction;
+            let stick = rng.uniform();
+            let ln = rng.gauss() as f64;
+            let kind = if is_void { Kind::Void } else { Kind::Debris };
+            // loose debris is cleaned off by repeated playback; voids stay
+            if kind == Kind::Debris && stick > (-self.p.passes / self.p.wash_passes).exp() * 0.9 + 0.1 {
+                continue;
+            }
+            let strength = match kind {
+                Kind::Debris => (0.25 * (r / 20.0).powf(0.6) * (0.5 * ln).exp()).clamp(0.03, 3.0),
+                Kind::Void => (0.8 + 0.2 * stick).min(1.0),
+            };
+            out.push(Defect { u, v, r, kind, strength });
+        }
+    }
+
+    /// The defects whose centre lies in `u0..u1` (along the tape) and `v0..v1` (across it),
+    /// micrometres. A defect has a footprint of radius `r`, so a caller that wants everything
+    /// touching a region widens the box by `p.r_max_um`. This is how the linear audio track,
+    /// which lies along the tape edge, finds its dropouts.
+    pub fn defects_in_band(&self, u0_um: f64, u1_um: f64, v0_um: f64, v1_um: f64) -> Vec<Defect> {
+        let mut out = Vec::new();
+        let (iu0, iu1) = ((u0_um / CELL_U).floor().max(0.0) as i64, (u1_um / CELL_U).floor() as i64);
+        let (iv0, iv1) = ((v0_um / CELL_V).floor().max(0.0) as i64, (v1_um / CELL_V).floor() as i64);
+        for iu in iu0..=iu1 {
+            for iv in iv0..=iv1 {
+                if (iv as f64) * CELL_V > TAPE_WIDTH_MM * 1000.0 {
+                    continue;
+                }
+                self.cell_defects(iu, iv, &mut out);
+            }
+        }
+        out.retain(|d| d.u >= u0_um && d.u < u1_um && d.v >= v0_um && d.v < v1_um);
+        out
+    }
+
     /// All point defects whose cell intersects track `n`'s neighbourhood.
     pub fn defects_near_track(&self, n: i64) -> Vec<Defect> {
         let g = geo(self.p.speed);
@@ -170,26 +215,7 @@ impl Tape {
                 if iv < 0 || (iv as f64) * CELL_V > TAPE_WIDTH_MM * 1000.0 {
                     continue;
                 }
-                let mut rng = Rng::new(self.seed, STREAM_TAPE, iu.wrapping_mul(100_003).wrapping_add(iv));
-                let lam = self.p.defects_per_mm2 * CELL_U * CELL_V / 1.0e6 * self.bathtub((iu as f64 + 0.5) * CELL_U);
-                for _ in 0..rng.poisson(lam) {
-                    let u = (iu as f64 + rng.uniform()) * CELL_U;
-                    let v = (iv as f64 + rng.uniform()) * CELL_V;
-                    let r = rng.power_law(self.p.size_alpha, self.p.r_min_um, self.p.r_max_um);
-                    let is_void = rng.uniform() < self.p.void_fraction;
-                    let stick = rng.uniform();
-                    let ln = rng.gauss() as f64;
-                    let kind = if is_void { Kind::Void } else { Kind::Debris };
-                    // loose debris is cleaned off by repeated playback; voids stay
-                    if kind == Kind::Debris && stick > (-self.p.passes / self.p.wash_passes).exp() * 0.9 + 0.1 {
-                        continue;
-                    }
-                    let strength = match kind {
-                        Kind::Debris => (0.25 * (r / 20.0).powf(0.6) * (0.5 * ln).exp()).clamp(0.03, 3.0),
-                        Kind::Void => (0.8 + 0.2 * stick).min(1.0),
-                    };
-                    out.push(Defect { u, v, r, kind, strength });
-                }
+                self.cell_defects(iu, iv, &mut out);
             }
         }
         out
@@ -315,6 +341,27 @@ mod tests {
             return None;
         }
         Some(((g0 + (i * STRIDE) as i64 - switch_time(n)) as f64) / RF_PER_LINE as f64) // lines from head-in
+    }
+
+    #[test]
+    fn band_query_sees_the_same_tape_as_the_track_query() {
+        let t = tape(TapeParams { defects_per_mm2: 5.0, position_m: 100.0, ..Default::default() });
+        // a box well inside the cells that a track query covers
+        let u_n = 100.0e6;
+        let (u0, u1, v0, v1) = (u_n + 50_000.0, u_n + 60_000.0, 6600.0, 7000.0);
+        let band = t.defects_in_band(u0, u1, v0, v1);
+        let mut from_track: Vec<Defect> = t.defects_near_track(0).into_iter().filter(|d| d.u >= u0 && d.u < u1 && d.v >= v0 && d.v < v1).collect();
+        assert!(!band.is_empty());
+        let key = |d: &Defect| (d.u.to_bits(), d.v.to_bits());
+        let mut band_sorted = band.clone();
+        band_sorted.sort_by_key(key);
+        from_track.sort_by_key(key);
+        assert_eq!(band_sorted.len(), from_track.len());
+        for (a, b) in band_sorted.iter().zip(from_track.iter()) {
+            assert_eq!((a.u, a.v, a.r, a.strength), (b.u, b.v, b.r, b.strength));
+        }
+        assert!(band.iter().all(|d| d.u >= u0 && d.u < u1 && d.v >= v0 && d.v < v1));
+        assert!(t.defects_in_band(u0, u1, -500.0, -1.0).is_empty(), "nothing lies beyond the tape edge");
     }
 
     #[test]
