@@ -72,6 +72,46 @@ Any raw parameter can be overridden (`--set tape.defects_per_mm2=0.03`,
 `--set head1.extra_spacing_um=0.9`, `[tape]`/`[deck]`/... tables in a config
 file). `[condition]` in a config file refines the preset before it is mapped.
 
+## Graphical interface
+
+![the window](docs/img/gui.jpg)
+
+A PySide6 desktop front end in `python/vhsgui` drives the `vhsphys` command line
+tool. It requires the built binary (`cargo build --release`), `ffmpeg`/`ffprobe`
+on the PATH, and `PySide6-Essentials`.
+
+```sh
+python3 -m venv .venv && .venv/bin/pip install -r python/requirements-gui.txt
+scripts/vhsphys-gui [input-video]
+```
+
+`scripts/vhsphys-gui` runs `python -m vhsgui` inside the repository's virtual
+environment. Options of `python -m vhsgui`:
+
+* `input`: optional path to a video file.
+* `--binary PATH`: path to the `vhsphys` executable (defaults to `$VHSPHYS_BIN`,
+  then `target/release`, `target/debug`, then the PATH).
+* `--screenshot PNG`: save a picture of the window and exit (works with
+  `QT_QPA_PLATFORM=offscreen`).
+
+The window presents condition settings on the left and a looped preview on the
+right:
+
+* **Settings**: choose the input video, preset, and seed; adjust the 20 condition
+  controls across Tape, Heads and drum, Playback deck, Transport and tracking,
+  and Recording deck ("Reset to preset" restores them); an Advanced box accepts
+  raw TOML overrides (such as `[tape]` / `creases_per_m = 0.5`). The settings
+  column scrolls while output controls (destination file, start, length, size,
+  CRF quality, Render / Cancel, and progress) stay pinned below.
+* **Preview**: choose a position and length (default 2 s, 0 for one frame) and
+  press "Render preview". It renders the excerpt and loops playback; Original /
+  Processed switches between source and result (key: O; Space plays/pauses).
+  Because tape state is an absolute function of frame index, the preview matches
+  the final output at that position.
+* **Rendering**: writes to a hidden temporary file alongside the target and renames
+  it on completion to avoid overwriting or corrupting existing files. Default
+  output is `<input name>_vhs.mp4`.
+
 ## What is physically modelled
 
 ```
@@ -135,6 +175,7 @@ cd python && ../.venv/bin/python -m pytest -q tests
 ```
 crates/vhsphys-core   physics library (record, tape, head, mech, electronics, decode, pipeline)
 crates/vhsphys-cli    `vhsphys` command line tool (ffmpeg pipes)
+python/vhsgui         desktop front end (PySide6) for the command line tool
 python/vhslab         reference physics, validation report, tuning and plotting tools
 docs/                 RESEARCH, ARCHITECTURE, PLUGIN, images
 scripts/gallery.sh    regenerate the gallery images

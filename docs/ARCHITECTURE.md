@@ -88,6 +88,16 @@ rendered with a shift of `-+1.5 H`. The head covers `width / pitch` of one or tw
 tracks depending on the lateral offset; the opposite-azimuth track is read
 through the 12-degree sinc filter (~ -28 dB at 4 MHz, ~ -14 dB at 629 kHz).
 
+## Graphical interface
+
+The desktop front end lives in `python/vhsgui`:
+* `model.py`: shared types, constants, and the condition field table.
+* `backend.py`: non-Qt operations including tool discovery, probing, config text generation, command lines, and background jobs.
+* `app.py`: the main application window and preview player.
+* `__main__.py`: CLI entry point and screenshot support.
+
+To preview an excerpt, the backend runs the CLI with `--start` beginning a few frames early (`LEAD_FRAMES` = 3). The first frames of a fresh render lack the neighbouring frames the model looks at, so they are dropped. Because the tape is a function of the absolute frame index, the remaining frames match a render of the whole file (about 38-41 dB PSNR against it, codec noise only; a one-frame offset gives about 17 dB).
+
 ## Extending
 
 * A new degradation: add parameters to the relevant `*Params`, apply them where
