@@ -29,6 +29,13 @@ use std::sync::Arc;
 
 const STREAM_HEAD: u64 = 1;
 
+/// Input frames a session must have seen past an output frame before it can decode it:
+/// the frame itself and the two after it (tracks and segments reach into the next frames).
+const LOOKAHEAD: i64 = 3;
+
+/// Batch size used to drain the earlier generations of a chain when the clip ends.
+const DRAIN_BATCH: usize = 8;
+
 /// Everything that defines a deck, a tape and how worn they are.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -354,11 +361,23 @@ impl Session {
 
     /// Number of output frames that can be produced right now.
     pub fn ready(&self) -> i64 {
-        let mut k = self.next_out;
-        while k < self.pushed && (self.finished || self.pushed >= k + 3) {
-            k += 1;
+        self.ready_with(0)
+    }
+
+    /// Output frames that would be ready if `extra` more frames were pushed. Frame `k`
+    /// needs input up to frame `k + LOOKAHEAD - 1`, unless the clip is finished.
+    fn ready_with(&self, extra: i64) -> i64 {
+        let pushed = self.pushed + extra;
+        let end = if self.finished { pushed } else { pushed - LOOKAHEAD + 1 };
+        (end - self.next_out).max(0)
+    }
+
+    /// Input frames still to be pushed before `out` output frames are ready.
+    fn input_needed(&self, out: i64) -> i64 {
+        if self.finished || out <= 0 {
+            return 0;
         }
-        k - self.next_out
+        (self.next_out + out + LOOKAHEAD - 1 - self.pushed).max(0)
     }
 
     /// Produce up to `max_frames` output frames.
@@ -481,33 +500,72 @@ impl Chain {
     }
 
     /// As `Session::with_start`: the tapes are functions of the absolute frame index.
+    /// Every generation starts at the same absolute frame, so a dub lines up with its source.
     pub fn with_start(stages: Vec<Params>, start: i64) -> Self {
-        let _ = (&stages, start);
-        unimplemented!("generation chain")
+        assert!(!stages.is_empty(), "a chain needs at least one generation");
+        Self { stages: stages.into_iter().map(|p| Session::with_start(p, start)).collect() }
     }
 
     pub fn push(&mut self, f: &Frame) {
-        let _ = f;
-        unimplemented!("generation chain")
+        self.stages[0].push(f);
     }
 
+    /// No more frames will arrive: finish each generation in turn and hand everything
+    /// it still holds to the next one, so only the last generation has output left.
     pub fn finish(&mut self) {
-        unimplemented!("generation chain")
+        for i in 0..self.stages.len() {
+            self.stages[i].finish();
+            if i + 1 < self.stages.len() {
+                while self.stages[i].ready() > 0 {
+                    for f in self.stages[i].process(DRAIN_BATCH) {
+                        self.stages[i + 1].push(&f);
+                    }
+                }
+            }
+        }
     }
 
-    /// Output frames that can be produced right now.
+    /// Output frames that can be produced right now, counting the frames each earlier
+    /// generation could already play back into the next one.
     pub fn ready(&self) -> i64 {
-        unimplemented!("generation chain")
+        self.stages.iter().fold(0, |handed_on, s| s.ready_with(handed_on))
     }
 
+    /// Produce up to `max_frames` output frames. Each generation plays back only as many
+    /// frames as the next one needs for that, in one batch, so every generation keeps the
+    /// field-level parallelism of `Session::process`.
     pub fn process(&mut self, max_frames: usize) -> Vec<Frame> {
-        let _ = max_frames;
-        unimplemented!("generation chain")
+        let n = self.stages.len();
+        // work backwards: how many frames each generation must hand to the next
+        let mut demand = vec![0i64; n];
+        demand[n - 1] = max_frames as i64;
+        for i in (1..n).rev() {
+            demand[i - 1] = self.stages[i].input_needed(demand[i]);
+        }
+        for i in 0..n - 1 {
+            if demand[i] > 0 {
+                for f in self.stages[i].process(demand[i] as usize) {
+                    self.stages[i + 1].push(&f);
+                }
+            }
+        }
+        self.stages[n - 1].process(max_frames)
     }
 
     /// Convenience: run a whole clip through every generation.
     pub fn run(stages: Vec<Params>, input: &[Frame]) -> Vec<Frame> {
-        let _ = (stages, input);
-        unimplemented!("generation chain")
+        let mut c = Chain::new(stages);
+        let mut out = Vec::new();
+        for f in input {
+            c.push(f);
+            while c.ready() > 0 {
+                out.extend(c.process(4));
+            }
+        }
+        c.finish();
+        while c.ready() > 0 {
+            out.extend(c.process(4));
+        }
+        out
     }
 }

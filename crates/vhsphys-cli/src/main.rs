@@ -12,7 +12,7 @@ use std::time::Instant;
 use vhsphys_core::condition::Condition;
 use vhsphys_core::config;
 use vhsphys_core::consts::{ACTIVE_H, ACTIVE_W};
-use vhsphys_core::pipeline::Session;
+use vhsphys_core::pipeline::Chain;
 use vhsphys_core::video::{decode_ideal, encode_frame, Frame};
 
 #[derive(Parser)]
@@ -57,6 +57,9 @@ struct RunArgs {
     /// Random seed: the same seed gives the same tape and deck.
     #[arg(long, default_value_t = 1)]
     seed: u64,
+    /// Generations: 1 is a recording of the source, 2 a copy of that tape, and so on.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=8))]
+    generations: u8,
     /// Start time in seconds.
     #[arg(long)]
     start: Option<f64>,
@@ -121,8 +124,22 @@ fn run(a: RunArgs) -> Result<()> {
         Some(p) => std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?,
         None => String::new(),
     };
-    let params = config::build(Some(&a.preset), &file_text, a.seed).map_err(anyhow::Error::msg)?;
-    let params = config::apply_overrides(&params, &config::sets_to_toml(&a.sets).map_err(anyhow::Error::msg)?).map_err(anyhow::Error::msg)?;
+    // `--set seed=N` is the seed of the whole chain, like a `seed` in the config file: it goes
+    // into the config text, where every later generation derives its own seed from it. The
+    // other `--set` items apply to every generation as they are.
+    let (seed_sets, other_sets): (Vec<String>, Vec<String>) =
+        a.sets.iter().cloned().partition(|s| s.split_once('=').is_some_and(|(k, _)| k.trim() == "seed"));
+    let mut text = file_text;
+    if !seed_sets.is_empty() {
+        let seed_set: toml::Table = toml::from_str(&config::sets_to_toml(&seed_sets).map_err(anyhow::Error::msg)?)?;
+        let mut table: toml::Table = toml::from_str(&text).context("reading the config")?;
+        table.extend(seed_set);
+        text = toml::to_string(&table)?;
+    }
+    let sets = config::sets_to_toml(&other_sets).map_err(anyhow::Error::msg)?;
+    let stages = config::generation_params(Some(&a.preset), &text, a.seed, a.generations as usize)
+        .and_then(|gens| gens.iter().map(|p| config::apply_overrides(p, &sets)).collect::<Result<Vec<_>, _>>())
+        .map_err(anyhow::Error::msg)?;
 
     let (iw, ih) = probe_size(&a.ffprobe, &a.input)?;
     let (ow, oh) = match &a.size {
@@ -178,7 +195,7 @@ fn run(a: RunArgs) -> Result<()> {
     // The tape, its defects and the timebase error are functions of the absolute frame index,
     // so rendering from `--start` gives the same picture as rendering the whole file.
     let start_frame = a.start.map_or(0, |s| (s * 30000.0 / 1001.0).round() as i64);
-    let mut session = if a.bypass { None } else { Some(Session::with_start(params, start_frame)) };
+    let mut session = if a.bypass { None } else { Some(Chain::with_start(stages, start_frame)) };
     let t0 = Instant::now();
     let (mut n_in, mut n_out) = (0usize, 0usize);
     let limit = a.frames.unwrap_or(usize::MAX);
