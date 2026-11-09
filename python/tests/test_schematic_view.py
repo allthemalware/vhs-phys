@@ -761,6 +761,21 @@ def test_the_painted_widget_matches_the_rendered_image(view):
     assert np.abs(painted - rendered).mean() < 1.0
 
 
+def test_a_render_at_another_width_is_the_same_picture(view):
+    """The TV picture, the rows and the wires must scale together: only the pixel count changes."""
+    view.set_animated(False)
+    view.set_screen_image(picture())
+    screen = view.screen_rect()
+    base = view.render_to_image(CW)
+    small = lambda img: lum(rgb(img.scaled(236, 124, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.SmoothTransformation))).ravel()  # noqa: E731
+    for width in (590, 886, 2360):
+        other = view.render_to_image(width)
+        k = width / CW
+        tv = QRectF(screen.x() * k, screen.y() * k, screen.width() * k, screen.height() * k)
+        assert np.corrcoef(thumb(other, tv), thumb(base, screen))[0, 1] > 0.9, f"at width {width} the TV shows a different picture"
+        assert np.corrcoef(small(other), small(base))[0, 1] > 0.95, f"at width {width} the drawing is not the same drawing"
+
+
 def test_rendering_works_at_other_sizes(view):
     for width in (590, 1180, 2360):
         a = shot(view, width)
