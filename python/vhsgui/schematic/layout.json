@@ -1,0 +1,717 @@
+{
+ "version": 1,
+ "canvas": {
+  "w": 1180,
+  "h": 620
+ },
+ "theme": {
+  "bg": "#010804",
+  "faint": "#0e4a22",
+  "dim": "#1c9a45",
+  "phosphor": "#39ff6e",
+  "hot": "#d8ffe3",
+  "warn": "#ffb347",
+  "line": {
+   "hair": 1.0,
+   "thin": 1.6,
+   "bold": 2.6
+  },
+  "glow": [
+   {
+    "w": 9,
+    "a": 0.05
+   },
+   {
+    "w": 5,
+    "a": 0.13
+   },
+   {
+    "w": 2.6,
+    "a": 0.32
+   }
+  ],
+  "scanline": {
+   "period": 3,
+   "alpha": 0.16
+  },
+  "vignette": 0.35,
+  "font": {
+   "family": [
+    "JetBrains Mono",
+    "DejaVu Sans Mono",
+    "monospace"
+   ],
+   "size": 12,
+   "tracking": 0.6
+  }
+ },
+ "title": {
+  "text": "VHS-PHYS",
+  "x": 20,
+  "y": 24,
+  "size": 14
+ },
+ "blocks": [
+  {
+   "id": "source",
+   "title": "SOURCE",
+   "x": 20,
+   "y": 40,
+   "w": 200,
+   "h": 100,
+   "frame": "box",
+   "caption": "PLACEHOLDER"
+  },
+  {
+   "id": "record_deck",
+   "title": "RECORD DECK",
+   "x": 20,
+   "y": 156,
+   "w": 200,
+   "h": 122,
+   "frame": "box",
+   "caption": "PLACEHOLDER"
+  },
+  {
+   "id": "cassette",
+   "title": "CASSETTE",
+   "x": 240,
+   "y": 40,
+   "w": 224,
+   "h": 300,
+   "frame": "box",
+   "caption": "PLACEHOLDER"
+  },
+  {
+   "id": "head_drum",
+   "title": "HEAD DRUM",
+   "x": 484,
+   "y": 40,
+   "w": 200,
+   "h": 122,
+   "frame": "box",
+   "caption": "PLACEHOLDER"
+  },
+  {
+   "id": "transport",
+   "title": "TRANSPORT",
+   "x": 484,
+   "y": 176,
+   "w": 200,
+   "h": 122,
+   "frame": "box",
+   "caption": "PLACEHOLDER"
+  },
+  {
+   "id": "power",
+   "title": "POWER",
+   "x": 704,
+   "y": 40,
+   "w": 200,
+   "h": 188,
+   "frame": "box",
+   "caption": "PLACEHOLDER"
+  },
+  {
+   "id": "output",
+   "title": "OUTPUT",
+   "x": 704,
+   "y": 244,
+   "w": 200,
+   "h": 100,
+   "frame": "box",
+   "caption": "PLACEHOLDER"
+  },
+  {
+   "id": "tv",
+   "title": "TV",
+   "x": 924,
+   "y": 40,
+   "w": 236,
+   "h": 260,
+   "frame": "box",
+   "caption": ""
+  }
+ ],
+ "instances": [
+  {
+   "glyph": "tv",
+   "x": 924,
+   "y": 40,
+   "scale": 1.0,
+   "block": "tv"
+  },
+  {
+   "glyph": "cassette",
+   "x": 252,
+   "y": 236,
+   "scale": 1.0,
+   "block": "cassette"
+  }
+ ],
+ "wires": [
+  {
+   "id": "w_source",
+   "kind": "video",
+   "points": [
+    [
+     120,
+     140
+    ],
+    [
+     120,
+     156
+    ]
+   ],
+   "label": "",
+   "label_at": [
+    0,
+    0
+   ],
+   "arrow": true
+  },
+  {
+   "id": "w_record",
+   "kind": "video",
+   "points": [
+    [
+     220,
+     217
+    ],
+    [
+     240,
+     217
+    ]
+   ],
+   "label": "",
+   "label_at": [
+    0,
+    0
+   ],
+   "arrow": true
+  },
+  {
+   "id": "w_tape",
+   "kind": "video",
+   "points": [
+    [
+     464,
+     100
+    ],
+    [
+     484,
+     100
+    ]
+   ],
+   "label": "",
+   "label_at": [
+    0,
+    0
+   ],
+   "arrow": true
+  },
+  {
+   "id": "w_heads",
+   "kind": "video",
+   "points": [
+    [
+     684,
+     100
+    ],
+    [
+     694,
+     100
+    ],
+    [
+     694,
+     294
+    ],
+    [
+     704,
+     294
+    ]
+   ],
+   "label": "",
+   "label_at": [
+    0,
+    0
+   ],
+   "arrow": true
+  },
+  {
+   "id": "w_out",
+   "kind": "video",
+   "points": [
+    [
+     904,
+     294
+    ],
+    [
+     924,
+     294
+    ]
+   ],
+   "label": "",
+   "label_at": [
+    0,
+    0
+   ],
+   "arrow": true
+  },
+  {
+   "id": "w_mech",
+   "kind": "power",
+   "points": [
+    [
+     704,
+     200
+    ],
+    [
+     684,
+     200
+    ]
+   ],
+   "label": "",
+   "label_at": [
+    0,
+    0
+   ],
+   "arrow": true
+  },
+  {
+   "id": "w_audio",
+   "kind": "audio",
+   "points": [
+    [
+     352,
+     340
+    ],
+    [
+     352,
+     380
+    ],
+    [
+     804,
+     380
+    ],
+    [
+     804,
+     344
+    ]
+   ],
+   "label": "SOUND",
+   "label_at": [
+    560,
+    374
+   ],
+   "arrow": true
+  },
+  {
+   "id": "w_dub",
+   "kind": "dub",
+   "points": [
+    [
+     860,
+     344
+    ],
+    [
+     860,
+     420
+    ],
+    [
+     120,
+     420
+    ],
+    [
+     120,
+     278
+    ]
+   ],
+   "label": "DUB",
+   "label_at": [
+    480,
+    414
+   ],
+   "arrow": true
+  }
+ ],
+ "labels": [],
+ "hint": {
+  "x": 20,
+  "y": 606,
+  "w": 1140,
+  "size": 12,
+  "default": "HOVER A LINE. DRAG TO SET. WHEEL TO STEP. DOUBLE CLICK TO RESET."
+ },
+ "controls": [
+  {
+   "id": "preset",
+   "block": "source",
+   "label": "PRESET",
+   "x": 26,
+   "y": 68,
+   "w": 188,
+   "kind": "choice",
+   "choices": [
+    "pristine",
+    "good",
+    "worn",
+    "bad",
+    "ruined",
+    "dry-caps",
+    "dirty-heads",
+    "mistracked",
+    "stretched",
+    "humid-attic"
+   ]
+  },
+  {
+   "id": "seed",
+   "block": "source",
+   "label": "SEED",
+   "x": 26,
+   "y": 90,
+   "w": 188,
+   "kind": "stepper",
+   "min": 0,
+   "max": 2147483647
+  },
+  {
+   "id": "rec_deck_age_years",
+   "block": "record_deck",
+   "label": "REC AGE",
+   "x": 26,
+   "y": 184,
+   "w": 188,
+   "kind": "slider",
+   "unit": "years",
+   "min": 0,
+   "max": 50,
+   "step": 0.5,
+   "decimals": 1
+  },
+  {
+   "id": "rec_deck_temp_c",
+   "block": "record_deck",
+   "label": "REC TEMP",
+   "x": 26,
+   "y": 206,
+   "w": 188,
+   "kind": "slider",
+   "unit": "\u00b0C",
+   "min": 20,
+   "max": 90,
+   "step": 1,
+   "decimals": 0
+  },
+  {
+   "id": "generations",
+   "block": "record_deck",
+   "label": "GENERATIONS",
+   "x": 26,
+   "y": 228,
+   "w": 188,
+   "kind": "stepper",
+   "min": 1,
+   "max": 8
+  },
+  {
+   "id": "tape_age_years",
+   "block": "cassette",
+   "label": "TAPE AGE",
+   "x": 246,
+   "y": 68,
+   "w": 212,
+   "kind": "slider",
+   "unit": "years",
+   "min": 0,
+   "max": 50,
+   "step": 0.5,
+   "decimals": 1
+  },
+  {
+   "id": "tape_storage",
+   "block": "cassette",
+   "label": "STORAGE",
+   "x": 246,
+   "y": 90,
+   "w": 212,
+   "kind": "slider",
+   "unit": "",
+   "min": 0,
+   "max": 1,
+   "step": 0.01,
+   "decimals": 2
+  },
+  {
+   "id": "tape_quality",
+   "block": "cassette",
+   "label": "QUALITY",
+   "x": 246,
+   "y": 112,
+   "w": 212,
+   "kind": "slider",
+   "unit": "",
+   "min": 0,
+   "max": 1,
+   "step": 0.01,
+   "decimals": 2
+  },
+  {
+   "id": "tape_passes",
+   "block": "cassette",
+   "label": "PLAYS",
+   "x": 246,
+   "y": 134,
+   "w": 212,
+   "kind": "slider",
+   "unit": "",
+   "min": 0,
+   "max": 200,
+   "step": 1,
+   "decimals": 0
+  },
+  {
+   "id": "tape_speed",
+   "block": "cassette",
+   "label": "SPEED",
+   "x": 246,
+   "y": 156,
+   "w": 212,
+   "kind": "choice",
+   "choices": [
+    "sp",
+    "lp",
+    "ep"
+   ]
+  },
+  {
+   "id": "tape_stretch",
+   "block": "cassette",
+   "label": "STRETCH",
+   "x": 246,
+   "y": 178,
+   "w": 212,
+   "kind": "slider",
+   "unit": "",
+   "min": 0,
+   "max": 1,
+   "step": 0.01,
+   "decimals": 2
+  },
+  {
+   "id": "tape_position_m",
+   "block": "cassette",
+   "label": "POSITION",
+   "x": 246,
+   "y": 200,
+   "w": 212,
+   "kind": "slider",
+   "unit": "m",
+   "min": 0,
+   "max": 400,
+   "step": 1,
+   "decimals": 0
+  },
+  {
+   "id": "head_wear",
+   "block": "head_drum",
+   "label": "HEAD WEAR",
+   "x": 490,
+   "y": 68,
+   "w": 188,
+   "kind": "slider",
+   "unit": "",
+   "min": 0,
+   "max": 1,
+   "step": 0.01,
+   "decimals": 2
+  },
+  {
+   "id": "head_clog",
+   "block": "head_drum",
+   "label": "HEAD CLOG",
+   "x": 490,
+   "y": 90,
+   "w": 188,
+   "kind": "slider",
+   "unit": "",
+   "min": 0,
+   "max": 1,
+   "step": 0.01,
+   "decimals": 2
+  },
+  {
+   "id": "drum_wear",
+   "block": "head_drum",
+   "label": "DRUM WEAR",
+   "x": 490,
+   "y": 112,
+   "w": 188,
+   "kind": "slider",
+   "unit": "",
+   "min": 0,
+   "max": 1,
+   "step": 0.01,
+   "decimals": 2
+  },
+  {
+   "id": "tracking_error_um",
+   "block": "transport",
+   "label": "TRACK ERR",
+   "x": 490,
+   "y": 204,
+   "w": 188,
+   "kind": "slider",
+   "unit": "\u00b5m",
+   "min": -40,
+   "max": 40,
+   "step": 0.5,
+   "decimals": 1
+  },
+  {
+   "id": "tracking_slope_um",
+   "block": "transport",
+   "label": "TRACK SLOPE",
+   "x": 490,
+   "y": 226,
+   "w": 188,
+   "kind": "slider",
+   "unit": "\u00b5m",
+   "min": -100,
+   "max": 100,
+   "step": 1,
+   "decimals": 0
+  },
+  {
+   "id": "tension_error",
+   "block": "transport",
+   "label": "TENSION",
+   "x": 490,
+   "y": 248,
+   "w": 188,
+   "kind": "slider",
+   "unit": "",
+   "min": -1,
+   "max": 1,
+   "step": 0.05,
+   "decimals": 2
+  },
+  {
+   "id": "deck_age_years",
+   "block": "power",
+   "label": "DECK AGE",
+   "x": 710,
+   "y": 68,
+   "w": 188,
+   "kind": "slider",
+   "unit": "years",
+   "min": 0,
+   "max": 50,
+   "step": 0.5,
+   "decimals": 1
+  },
+  {
+   "id": "deck_temp_c",
+   "block": "power",
+   "label": "CAP TEMP",
+   "x": 710,
+   "y": 90,
+   "w": 188,
+   "kind": "slider",
+   "unit": "\u00b0C",
+   "min": 20,
+   "max": 90,
+   "step": 1,
+   "decimals": 0
+  },
+  {
+   "id": "deck_humidity",
+   "block": "power",
+   "label": "HUMIDITY",
+   "x": 710,
+   "y": 112,
+   "w": 188,
+   "kind": "slider",
+   "unit": "",
+   "min": 0,
+   "max": 1,
+   "step": 0.01,
+   "decimals": 2
+  },
+  {
+   "id": "psu_smps",
+   "block": "power",
+   "label": "SMPS PSU",
+   "x": 710,
+   "y": 134,
+   "w": 188,
+   "kind": "toggle"
+  },
+  {
+   "id": "mains_hz",
+   "block": "power",
+   "label": "MAINS",
+   "x": 710,
+   "y": 156,
+   "w": 188,
+   "kind": "slider",
+   "unit": "Hz",
+   "min": 50,
+   "max": 60,
+   "step": 10,
+   "decimals": 0
+  },
+  {
+   "id": "mains_sag",
+   "block": "power",
+   "label": "SAG",
+   "x": 710,
+   "y": 178,
+   "w": 188,
+   "kind": "slider",
+   "unit": "",
+   "min": 0,
+   "max": 0.2,
+   "step": 0.005,
+   "decimals": 3
+  },
+  {
+   "id": "signal",
+   "block": "output",
+   "label": "SIGNAL",
+   "x": 710,
+   "y": 272,
+   "w": 188,
+   "kind": "choice",
+   "choices": [
+    "svideo",
+    "notch",
+    "comb1h",
+    "comb2h"
+   ]
+  },
+  {
+   "id": "audio",
+   "block": "output",
+   "label": "SOUND",
+   "x": 710,
+   "y": 294,
+   "w": 188,
+   "kind": "choice",
+   "choices": [
+    "process",
+    "copy",
+    "none"
+   ]
+  }
+ ],
+ "animation": {
+  "pulse_speed": 90,
+  "pulse_spacing": 70,
+  "reel_rpm": 12,
+  "flicker": 0.03,
+  "boot_ms": 1800,
+  "refresh_flash_ms": 250
+ }
+}
