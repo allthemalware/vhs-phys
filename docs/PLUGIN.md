@@ -24,6 +24,11 @@ s.finish();                     // flush the tail
   candidate. A sensible plugin UI is the `Condition` struct (sliders for tape
   age, storage, head wear, deck age and temperature ...) plus an "advanced" panel
   that exposes raw physical parameters.
+* A host with several generations uses `Chain::with_start(stages, start)` instead
+  of a `Session` (same `push` / `ready` / `process` / `finish`).
+* Sound goes through `audio::AudioProcessor::new(&params, rate, channels)` and
+  `process(interleaved, start_sample)`, whose output is delayed by `latency()`
+  samples.
 
 ## Hosting model
 

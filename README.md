@@ -63,6 +63,7 @@ humidity, mains, tracking, tension ...) that the laws in
 | deck age + temperature | electrolytic capacitor C and ESR (life halves per +10 C) -> supply ripple, regulator dropout, hum bars, SMPS herringbone |
 | deck age + humidity | resistor drift -> emphasis network error, discriminator detuning, DC error |
 | tape age, storage, quality, passes | oxide defect density and size, voids vs debris, creases, roughness, media noise, magnetic loss |
+| tape speed | track pitch -> noise, crosstalk, tracking tolerance, audio bandwidth |
 | head wear / clog | head half-width and spacing (Wallace loss), gain, azimuth error, one noisy field |
 | drum / tension / stretch | timebase spectrum, flagging at the top, head-switch error, track bow and slope |
 | tracking error | lateral head offset -> noise band, adjacent-track crosstalk |
@@ -112,6 +113,30 @@ right:
   it on completion to avoid overwriting or corrupting existing files. Default
   output is `<input name>_vhs.mp4`.
 
+## Tape speeds, generations, composite and sound
+
+### Tape speed
+
+Set in a config file (`[condition]` / `tape_speed = "lp"`; `--set` cannot reach the `[condition]` table) or with the window's "Tape speed" menu (`sp`, `lp`, `ep`). Track pitch is 58 / 28.9 / 19.3 um; the extra noise, crosstalk and tighter tracking tolerance of LP and EP follow from the narrower tracks (details in `docs/TAPE_SPEEDS.md`).
+
+![source, SP, LP, EP with a 5 um tracking error](docs/img/features_speed_fractal.jpg)
+
+### Generations
+
+Set with `--generations N` (1 to 8, default 1) or in the window with "Generations". Each generation re-records the previous one's playback on a different tape and deck (its own seed), so defects, wear and timebase differ; the cost is N times. A seed given by `--set seed=N` or in the config file is the seed of the whole chain.
+
+![source, generation 1, 2, 3](docs/img/features_generations_fractal.jpg)
+
+### Composite output
+
+Off by default (S-Video style). Enable with `--set composite.enabled=true --set composite.decoder=notch|comb1h|comb2h` or with the window's "Signal" menu. The deck's Y/C is summed onto the NTSC subcarrier and separated again like a TV does: a notch leaks fine luma detail into colour (rainbow), a comb leaks vertical colour edges into luma (hanging dots), and the dot pattern crawls from frame to frame (details in `docs/COMPOSITE.md`).
+
+![source, notch, comb1h, comb2h on a zone plate and a colour checkerboard](docs/img/features_composite_detail.jpg)
+
+### Sound
+
+Set with `--audio process|copy|none` (default `process`; `copy` leaves the input audio as it was, `none` removes it) or in the window with "Sound" (previews never process sound). The linear audio track is simulated by the same tape and deck as the picture: wow and flutter come from the same capstan error as the picture's timebase, hum from the same supply ripple that makes hum bars, bandwidth from the tape speed (-3 dB at about 10 / 5 / 3.3 kHz at SP / LP / EP), hiss from tape and head noise (about 42 dB SNR on a good SP tape), and dropouts from the same defect statistics (details in `docs/AUDIO.md`). Hi-Fi audio is not modelled.
+
 ## What is physically modelled
 
 ```
@@ -132,20 +157,24 @@ frame -> NTSC raster (sync, burst, vsync, half-line field offset)
            de-emphasis, video low-pass, aperture corrector, supply ripple
   -> display: sync separator (tip referenced), AFC flywheel, back-porch clamp,
               burst APC/ACC/colour killer, 1 H comb for crosstalk
+  -> optional composite stage: Y/C summed on the subcarrier and separated by a notch or comb
 ```
+
+The sound takes the same transport, supply, tape and head parameters (see docs/AUDIO.md), and `--generations` chains several decks.
 
 Research notes, parameter provenance and sources: `docs/RESEARCH.md`.
 Architecture and numerical decisions: `docs/ARCHITECTURE.md`.
 
 ## Validation
 
-* 49 Rust tests (`cargo test --release`): carrier frequencies match the VHS
+* 94 Rust tests (`cargo test --release`): carrier frequencies match the VHS
   standard, the discriminator is exact, the chroma duty-cycle recording gain
   matches theory, spacing loss follows 54.6 dB per wavelength, the azimuth
   filter follows the sinc law, adjacent tracks are line aligned, creases sit at a
   fixed picture height, point defects slide 1.5 lines per field, repeated playback
   cleans debris, component ageing follows the 10-degree rule, sessions are
-  deterministic and reproducible from any start frame.
+  deterministic and reproducible from any start frame, tape speed geometry,
+  composite separation, generations, audio bandwidth/wow/hum/dropouts.
 * Python lab (`python/`): checks the closed-form head physics against a full
   numerical Karlqvist integration, and measures the real CLI end to end.
 
@@ -159,14 +188,12 @@ cd python && ../.venv/bin/python -m pytest -q tests
 
 ## Known limits of this prototype
 
-* NTSC VHS SP only. PAL/SECAM, S-VHS, LP/EP track geometry are not implemented
-  (the constants and structure are in place; PAL needs a per-line V switch).
+* NTSC VHS SP/LP/EP only (no PAL/SECAM/S-VHS; the constants and structure are in
+  place; PAL needs a per-line V switch).
 * Input is treated as a progressive source (the two fields of a frame come from
   the same image); there is no 59.94 fps field output yet.
-* Output is the deck's separated Y/C decoded as an S-Video-style display; the
-  composite encode/decode (dot crawl, cross-colour) is not modelled.
-* Non-linear (level dependent) emphasis, Hi-Fi/linear audio and print-through
-  are not modelled. Audio is copied unchanged.
+* Non-linear (level dependent) emphasis, Hi-Fi audio and print-through are not
+  modelled.
 * The ageing laws and several defaults are engineering estimates (tagged `[est]`
   in the source and notes) and are meant to be tuned against real tapes.
 
@@ -177,6 +204,7 @@ crates/vhsphys-core   physics library (record, tape, head, mech, electronics, de
 crates/vhsphys-cli    `vhsphys` command line tool (ffmpeg pipes)
 python/vhsgui         desktop front end (PySide6) for the command line tool
 python/vhslab         reference physics, validation report, tuning and plotting tools
-docs/                 RESEARCH, ARCHITECTURE, PLUGIN, images
+docs/                 RESEARCH, ARCHITECTURE, PLUGIN, PERFORMANCE, TAPE_SPEEDS, COMPOSITE, AUDIO, images
 scripts/gallery.sh    regenerate the gallery images
+scripts/features.sh   regenerate the feature images
 ```

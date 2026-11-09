@@ -34,6 +34,9 @@ the time axis for everything, so any process that is a function of global time
 | `condition` | ageing laws: years/temperature/humidity -> component values -> parameters |
 | `config` | TOML merging, `--set` overrides |
 | `pipeline` | streaming session, calibration, per-field scheduling and caching |
+| `format` | tape speed geometry: SP/LP/EP track pitch, angle, advance |
+| `composite` | Y/C sum and separation, notch and combs |
+| `audio` | the linear audio path (`audio.rs`): transport delay, loss, hiss, hum, dropouts |
 
 ## Data flow per field
 
@@ -51,6 +54,8 @@ Frame `k` needs fields `2k..2k+2` (the last visible lines of a field are read by
 the next head) and therefore video frames `k-2 .. k+2`: the output lags the input
 by three frames. Intermediate results are cached per field and evicted as the
 window moves, so memory is bounded (a few tens of MB) for any clip length.
+`Chain` runs one `Session` per generation, and the decode may be followed by
+`composite::roundtrip`.
 
 ## Key numerical decisions
 
@@ -87,6 +92,7 @@ are line aligned after the 0.5 H interlace offset; neighbour tracks are
 rendered with a shift of `-+1.5 H`. The head covers `width / pitch` of one or two
 tracks depending on the lateral offset; the opposite-azimuth track is read
 through the 12-degree sinc filter (~ -28 dB at 4 MHz, ~ -14 dB at 629 kHz).
+LP and EP change the pitch and the advance (see docs/TAPE_SPEEDS.md).
 
 ## Graphical interface
 
