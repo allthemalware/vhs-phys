@@ -5,7 +5,7 @@
 //! 1. `record_track`        (parallel)  video -> magnetisation reversals on track n
 //! 2. `render_rf`           (parallel)  playback head output of track n (+ neighbours)
 //! 3. `segment`             (parallel)  head switch + common deck electronics
-//! 4. `decode_frame`        (parallel)  sync/AFC/colour decoding
+//! 4. `decode_frame`        (parallel)  sync/AFC/colour decoding (+ optional composite stage)
 //!
 //! Intermediate results are cached per field and evicted when no longer needed.
 
@@ -409,7 +409,7 @@ impl Session {
                 let luma: Vec<f32> = parts.iter().flat_map(|s| s.luma.iter().copied()).collect();
                 let cu: Vec<f32> = parts.iter().flat_map(|s| s.cunder.iter().copied()).collect();
                 let view = StreamView { bb0: parts[0].bb_start, luma: &luma, cunder: &cu };
-                decode_frame(k, &view, &p.decode)
+                decode_frame(k, &view, &p.decode, &p.composite)
             })
             .collect();
 

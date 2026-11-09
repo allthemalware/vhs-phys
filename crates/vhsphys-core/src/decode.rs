@@ -8,13 +8,16 @@
 //! * the back porch is clamped (DC restoration);
 //! * colour-under is synchronously demodulated with the line-rotated carrier,
 //!   referenced to the burst (APC phase, ACC gain, colour killer) and passed
-//!   through the 1 H comb that cancels adjacent-track crosstalk.
+//!   through the 1 H comb that cancels adjacent-track crosstalk;
+//! * optionally, the picture then goes through a composite cable and the TV's Y/C
+//!   separator (`composite`) before it is converted to RGB.
 
 use serde::{Deserialize, Serialize};
+use crate::composite::{self, CompositeParams};
 use crate::consts::*;
 use crate::dsp::*;
 use crate::record::line_rotation;
-use crate::video::{ycc_to_rgb, Frame};
+use crate::video::{decode_ideal, Baseband, Frame};
 use std::f64::consts::PI;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -156,8 +159,19 @@ pub(crate) fn demod_chroma(view: &StreamView, start: i64, len: usize, p: &Decode
     (re, im)
 }
 
-/// Decode frame `k` from the deck output.
-pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams) -> Frame {
+/// Decode frame `k` from the deck output to RGB. With `composite.enabled` the decoded
+/// luma and chroma first pass through a composite connection to the TV.
+pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams, composite: &CompositeParams) -> Frame {
+    let mut bb = decode_planes(k, view, p);
+    if composite.enabled {
+        composite::roundtrip(&mut bb, k, composite);
+    }
+    decode_ideal(&bb)
+}
+
+/// Luma and chroma of frame `k` as the deck delivers them, placed on the nominal raster
+/// (the active picture of each line, timed by the AFC); the rest of the frame is blank.
+pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams) -> Baseband {
     let frame0 = k * FRAME_BB as i64;
     let (cs, ce) = (frame0 + 20 * BB_PER_LINE as i64, frame0 + 525 * BB_PER_LINE as i64);
     assert!(view.bb0 <= cs - 2000 && view.end() >= ce, "stream view does not cover frame {k}");
@@ -166,7 +180,7 @@ pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams) -> Frame {
     let (cre, cim) = demod_chroma(view, cstart, clen, p);
     let cat = |n: f64, c: &[f32]| -> f32 { sample_cubic(c, n - cstart as f64) };
 
-    let mut frame = Frame::new(ACTIVE_W, ACTIVE_H);
+    let mut planes = Baseband::blank();
     for field in 0..2 {
         let mut s_est = 0.0f64;
         let (mut phi_s, mut g_s) = (0.0f64, 0.0f64);
@@ -239,7 +253,7 @@ pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams) -> Frame {
             chroma_lines.push(cl);
         }
         for j in 0..FIELD_ACTIVE_LINES {
-            let row = 2 * j + field;
+            let base = (FIELD_FIRST_LINE[field] + j) * BB_PER_LINE + ACTIVE_START;
             for x in 0..ACTIVE_W {
                 let c = if p.comb && j > 0 {
                     let (a, b) = (chroma_lines[j][x], chroma_lines[j - 1][x]);
@@ -247,15 +261,13 @@ pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams) -> Frame {
                 } else {
                     chroma_lines[j][x]
                 };
-                let rgb = ycc_to_rgb(luma_lines[j][x], c[0], c[1]);
-                let pix = (row * ACTIVE_W + x) * 3;
-                for q in 0..3 {
-                    frame.rgb[pix + q] = (rgb[q] * 255.0 + 0.5) as u8;
-                }
+                planes.y[base + x] = luma_lines[j][x];
+                planes.cu[base + x] = c[0];
+                planes.cv[base + x] = c[1];
             }
         }
     }
-    frame
+    planes
 }
 
 #[cfg(test)]
