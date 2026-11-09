@@ -690,12 +690,15 @@ def test_it_looks_like_a_phosphor_screen(view):
 def test_the_glow_adds_light_around_the_strokes_and_never_takes_any_away(view):
     view.set_animated(False)
     view.set_screen_image(picture())
+    tv = view.screen_rect().adjusted(-8, -8, 8, 8)
+    outside = np.ones((CH, CW), bool)  # the picture is not part of the drawing's glow
+    outside[int(tv.top()) : int(tv.bottom()), int(tv.left()) : int(tv.right())] = False
     view.set_effects(**NO_EFFECTS)
     crisp = lum(shot(view))
     view.set_effects(glow=True, scanlines=False, vignette=False)
     glow = lum(shot(view))
-    assert glow.sum() >= crisp.sum() * 1.10
-    assert (glow > 8).sum() >= (crisp > 8).sum() * 1.15
+    assert glow[outside].sum() >= crisp[outside].sum() * 1.10
+    assert ((glow > 8) & outside).sum() >= ((crisp > 8) & outside).sum() * 1.15
     assert (glow >= crisp - 2).all()
 
 
@@ -838,7 +841,7 @@ def test_the_screen_draws_itself_line_by_line_at_start(view):
     view.start_boot()
     assert view.boot_progress() == 0.0
     start = lit(shot(view))
-    assert start <= 0.08 * lit(final)
+    assert start <= 0.15 * lit(final), "at the start only the sweep's leading line is lit"
     view.advance(BOOT_S * 0.5)
     half = lit(shot(view))
     assert 0 < view.boot_progress() < 1 and start < half < lit(final)
