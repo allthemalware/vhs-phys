@@ -70,6 +70,7 @@ from vhsgui.model import (
     RunRequest,
     frame_time,
 )
+from vhsgui.schematic.view import SchematicView
 
 WINDOW_TITLE = "vhs-phys"
 WINDOW_SIZE = (1180, 760)  # default size of the window
@@ -140,6 +141,18 @@ MODE_PROCESSED = "processed"
 MODE_SPLIT = "split"
 TASK_PREVIEW = "preview"
 TASK_RENDER = "render"
+
+# The schematic mirrors these five editor lines and uses the same help text as their tooltips.
+LOOK_HELP = {
+    "preset": "The starting condition of the tape and decks; the lines below start from its values.",
+    "seed": "Seeds the random defects: the same seed always gives the same damage.",
+    "generations": "How many times the tape is copied: each generation is a different deck and tape",
+    "signal": "How the picture is separated again: S-Video keeps luma and chroma apart, notch and comb filters mix them the way a TV does.",
+    "audio": "The sound track: simulated with the same wear, copied unchanged, or removed.",
+}
+SCHEMATIC_MIN_WIDTH = 1240
+SCHEMATIC_MIN_HEIGHT = 880
+SCHEMATIC_BOTTOM_MAX_HEIGHT = 250
 
 
 def _clock(seconds: float) -> str:
@@ -322,6 +335,10 @@ class MainWindow(QMainWindow):
         self._loading = False  # true while the editors are being filled from a preset
         self._advanced_error: str | None = None
         self._closed = False
+        self._schematic_mode = False
+        self._schematic_booted = False
+        self._sync_guard = False
+        self._schematic_baseline: dict[str, object] = {}
         self.original_frames: Frames | None = None
         self.processed_frames: Frames | None = None
         self._frame_index = 0
@@ -344,6 +361,11 @@ class MainWindow(QMainWindow):
         self._checks: dict[str, QCheckBox] = {}
         self._choice_boxes: dict[str, QComboBox] = {}
         self._field_labels: list[QLabel] = []
+        self._input_group: QGroupBox
+        self._output_group: QGroupBox
+        self._playback_row: QWidget
+        self._position_row: QWidget
+        self._preview_row: QWidget
 
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(*WINDOW_SIZE)
@@ -363,7 +385,9 @@ class MainWindow(QMainWindow):
         self._play_timer.setInterval(PLAY_INTERVAL_MS)
         self._play_timer.timeout.connect(self._advance_frame)
 
-        QShortcut(QKeySequence(Qt.Key.Key_Space), self).activated.connect(self._toggle_play)
+        space = QShortcut(QKeySequence(Qt.Key.Key_Space), self._panels_area)
+        space.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        space.activated.connect(self._toggle_play)
         QShortcut(QKeySequence(Qt.Key.Key_O), self).activated.connect(self._toggle_view)
         self._update_controls()
 
@@ -390,6 +414,29 @@ class MainWindow(QMainWindow):
     def source_pending(self) -> bool:
         """A source frame has been asked for and has not arrived yet."""
         return self._source is not None or self._source_timer.isActive()
+
+    @property
+    def schematic_mode(self) -> bool:
+        return self._schematic_mode
+
+    def set_schematic_mode(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self._schematic_mode:
+            return
+        if enabled:
+            self._grow_for_schematic()
+        self._schematic_mode = enabled
+        self.panels_button.setChecked(not enabled)
+        self.schematic_button.setChecked(enabled)
+        self._move_schematic_widgets(enabled)
+        self._panels_area.setVisible(not enabled)
+        self.schematic.setVisible(enabled)
+        self._schematic_bottom.setVisible(enabled)
+        if enabled:
+            if not self._schematic_booted:
+                self.schematic.start_boot()
+                self._schematic_booted = True
+            self.schematic.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def look(self) -> Look:
         return Look(
@@ -421,13 +468,19 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ building the window
 
     def _build_ui(self) -> None:
+        self._input_group = self._build_input_group()
+        look_group = self._build_look_group()
+        condition_groups = self._build_condition_groups()
+        advanced_group = self._build_advanced_group()
+        self._output_group = self._build_output_group()
+
         controls = QWidget()
         column = QVBoxLayout(controls)
-        column.addWidget(self._build_input_group())
-        column.addWidget(self._build_look_group())
-        for group in self._build_condition_groups():
+        column.addWidget(self._input_group)
+        column.addWidget(look_group)
+        for group in condition_groups:
             column.addWidget(group)
-        column.addWidget(self._build_advanced_group())
+        column.addWidget(advanced_group)
         column.addStretch(1)
 
         scroll = QScrollArea()
@@ -441,16 +494,117 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(6)
         left_layout.addWidget(scroll, 1)
-        left_layout.addWidget(self._build_output_group(), 0)
+        left_layout.addWidget(self._output_group, 0)
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setChildrenCollapsible(False)
-        splitter.addWidget(left)
-        splitter.addWidget(self._build_preview_column())
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([LEFT_WIDTH, WINDOW_SIZE[0] - LEFT_WIDTH])
-        self.setCentralWidget(splitter)
+        self._panels_area = QSplitter(Qt.Orientation.Horizontal)
+        self._panels_area.setChildrenCollapsible(False)
+        self._panels_area.addWidget(left)
+        self._panels_area.addWidget(self._build_preview_column())
+        self._panels_area.setStretchFactor(0, 0)
+        self._panels_area.setStretchFactor(1, 1)
+        self._panels_area.setSizes([LEFT_WIDTH, WINDOW_SIZE[0] - LEFT_WIDTH])
+
+        self._build_mode_bar()
+        self.schematic = SchematicView()
+        self.schematic.setObjectName("schematicView")
+        self.schematic.setVisible(False)
+        self.schematic.valueChanged.connect(self._on_schematic_value_changed)
+        self.schematic.resetRequested.connect(self._reset_schematic_value)
+        self.preview.image_changed.connect(self._sync_screen_image)
+        self._sync_screen_image()
+
+        self._build_schematic_bottom()
+        self._schematic_bottom.setVisible(False)
+        root = QWidget()
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(6, 6, 6, 6)
+        root_layout.setSpacing(4)
+        root_layout.addWidget(self._mode_bar)
+        root_layout.addWidget(self._panels_area, 1)
+        root_layout.addWidget(self.schematic, 1)
+        root_layout.addWidget(self._schematic_bottom, 0)
+        self.setCentralWidget(root)
+
+    def _build_mode_bar(self) -> None:
+        self._mode_bar = QWidget()
+        layout = QHBoxLayout(self._mode_bar)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addStretch(1)
+        self.panels_button = QPushButton("Panels")
+        self.panels_button.setObjectName("panelsButton")
+        self.panels_button.setCheckable(True)
+        self.schematic_button = QPushButton("Schematic")
+        self.schematic_button.setObjectName("schematicButton")
+        self.schematic_button.setCheckable(True)
+        modes = QButtonGroup(self)
+        modes.setExclusive(True)
+        modes.addButton(self.panels_button)
+        modes.addButton(self.schematic_button)
+        self.panels_button.setChecked(True)
+        self.panels_button.clicked.connect(lambda: self.set_schematic_mode(False))
+        self.schematic_button.clicked.connect(lambda: self.set_schematic_mode(True))
+        layout.addWidget(self.panels_button)
+        layout.addWidget(self.schematic_button)
+
+    def _build_schematic_bottom(self) -> None:
+        self._schematic_bottom = QWidget()
+        self._schematic_bottom.setMaximumHeight(SCHEMATIC_BOTTOM_MAX_HEIGHT)
+        layout = QGridLayout(self._schematic_bottom)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        activity = QWidget()
+        activity_layout = QVBoxLayout(activity)
+        activity_layout.setContentsMargins(0, 0, 0, 0)
+        activity_layout.setSpacing(2)
+        self._schematic_activity = activity
+        layout.addWidget(activity, 0, 1)
+        layout.setColumnStretch(0, 1)
+        layout.setColumnStretch(1, 2)
+        layout.setColumnStretch(2, 2)
+
+    def _move_schematic_widgets(self, enabled: bool) -> None:
+        if enabled:
+            scroll = self._panels_area.widget(0).layout().itemAt(0).widget()
+            scroll.widget().layout().removeWidget(self._input_group)
+            self._panels_area.widget(0).layout().removeWidget(self._output_group)
+            preview_column = self._panels_area.widget(1)
+            preview_layout = preview_column.layout()
+            for widget in (self._playback_row, self._position_row, self._preview_row):
+                preview_layout.removeWidget(widget)
+            self._schematic_bottom.layout().addWidget(self._input_group, 0, 0)
+            activity_layout = self._schematic_activity.layout()
+            activity_layout.addWidget(self._playback_row)
+            activity_layout.addWidget(self._position_row)
+            activity_layout.addWidget(self._preview_row)
+            self._schematic_bottom.layout().addWidget(self._output_group, 0, 2)
+        else:
+            bottom_layout = self._schematic_bottom.layout()
+            bottom_layout.removeWidget(self._input_group)
+            bottom_layout.removeWidget(self._output_group)
+            activity = bottom_layout.itemAtPosition(0, 1).widget()
+            activity.layout().removeWidget(self._playback_row)
+            activity.layout().removeWidget(self._position_row)
+            activity.layout().removeWidget(self._preview_row)
+            left = self._panels_area.widget(0)
+            scroll = left.layout().itemAt(0).widget()
+            scroll.widget().layout().insertWidget(0, self._input_group)
+            left.layout().addWidget(self._output_group, 0)
+            preview_layout = self._panels_area.widget(1).layout()
+            preview_layout.insertWidget(1, self._playback_row)
+            preview_layout.insertWidget(2, self._position_row)
+            preview_layout.insertWidget(3, self._preview_row)
+
+    def _grow_for_schematic(self) -> None:
+        if self.isMaximized() or self.isFullScreen():
+            return
+        screen = self.screen()
+        if screen is None:
+            return
+        available = screen.availableGeometry()
+        self.resize(
+            min(available.width(), max(self.width(), SCHEMATIC_MIN_WIDTH)),
+            min(available.height(), max(self.height(), SCHEMATIC_MIN_HEIGHT)),
+        )
 
     def _build_input_group(self) -> QGroupBox:
         box = QGroupBox("Input")
@@ -472,10 +626,12 @@ class MainWindow(QMainWindow):
         grid = QGridLayout(box)
         self.preset_combo = QComboBox()
         self.preset_combo.setObjectName("presetCombo")
+        self.preset_combo.setToolTip(LOOK_HELP["preset"])
         self.seed_spin = QSpinBox()
         self.seed_spin.setObjectName("seedSpin")
         self.seed_spin.setRange(0, SEED_MAX)
         self.seed_spin.setValue(1)
+        self.seed_spin.setToolTip(LOOK_HELP["seed"])
         self.seed_spin.valueChanged.connect(self._on_look_changed)
         self.random_seed_button = QPushButton("Random")
         self.random_seed_button.setObjectName("randomSeedButton")
@@ -490,14 +646,16 @@ class MainWindow(QMainWindow):
         self.generations_spin.valueChanged.connect(self._on_look_changed)
         generations_label = QLabel("Generations")
         for widget in (generations_label, self.generations_spin):
-            widget.setToolTip("How many times the tape is copied: each generation is a different deck and tape")
+            widget.setToolTip(LOOK_HELP["generations"])
         self.signal_combo = QComboBox()
         self.signal_combo.setObjectName("signalCombo")
+        self.signal_combo.setToolTip(LOOK_HELP["signal"])
         for text, value in zip(SIGNAL_LABELS, SIGNALS, strict=True):
             self.signal_combo.addItem(text, value)
         self.signal_combo.currentIndexChanged.connect(self._on_look_changed)
         self.audio_combo = QComboBox()
         self.audio_combo.setObjectName("audioCombo")
+        self.audio_combo.setToolTip(LOOK_HELP["audio"])
         for text, value in zip(AUDIO_LABELS, AUDIO_MODES, strict=True):
             self.audio_combo.addItem(text, value)
         self.audio_combo.currentIndexChanged.connect(self._on_look_changed)
@@ -734,7 +892,9 @@ class MainWindow(QMainWindow):
         playback.addWidget(self.play_button)
         playback.addWidget(self.frame_slider, 1)
         playback.addWidget(self.frame_label)
-        layout.addLayout(playback)
+        self._playback_row = QWidget()
+        self._playback_row.setLayout(playback)
+        layout.addWidget(self._playback_row)
 
         self.position_slider = QSlider(Qt.Orientation.Horizontal)
         self.position_slider.setObjectName("positionSlider")
@@ -745,7 +905,9 @@ class MainWindow(QMainWindow):
         position.addWidget(QLabel("Position"))
         position.addWidget(self.position_slider, 1)
         position.addWidget(self.position_label)
-        layout.addLayout(position)
+        self._position_row = QWidget()
+        self._position_row.setLayout(position)
+        layout.addWidget(self._position_row)
 
         self.length_spin = QDoubleSpinBox()
         self.length_spin.setObjectName("lengthSpin")
@@ -766,7 +928,9 @@ class MainWindow(QMainWindow):
         preview_row.addWidget(self.length_spin)
         preview_row.addWidget(self.preview_button)
         preview_row.addWidget(self.stale_label, 1)
-        layout.addLayout(preview_row)
+        self._preview_row = QWidget()
+        self._preview_row.setLayout(preview_row)
+        layout.addWidget(self._preview_row)
         return column
 
     def _fill_presets(self) -> None:
@@ -775,6 +939,8 @@ class MainWindow(QMainWindow):
             self.preset_combo.addItem(preset.name)
             self.preset_combo.setItemData(index, preset.summary, Qt.ItemDataRole.ToolTipRole)
         names = [preset.name for preset in presets]
+        self.schematic.set_choices("preset", names)
+        self.schematic.set_help({**{spec.key: spec.help for spec in CONDITION_FIELDS}, **LOOK_HELP})
         if DEFAULT_PRESET in names:
             self.preset_combo.setCurrentIndex(names.index(DEFAULT_PRESET))
         self._load_preset()
@@ -810,6 +976,40 @@ class MainWindow(QMainWindow):
         finally:
             self._loading = False
 
+    def _schematic_values(self) -> dict[str, object]:
+        look = self.look()
+        return {
+            **look.condition,
+            "preset": look.preset,
+            "seed": look.seed,
+            "generations": look.generations,
+            "signal": look.signal,
+            "audio": look.audio,
+        }
+
+    def _sync_schematic(self) -> None:
+        if self._sync_guard:
+            return
+        self._sync_guard = True
+        try:
+            for control_id, value in self._schematic_values().items():
+                self.schematic.set_value(control_id, value, emit=False)
+        finally:
+            self._sync_guard = False
+
+    def _sync_screen_image(self) -> None:
+        self.schematic.set_screen_image(self.preview.image())
+
+    def _set_schematic_baseline(self, condition: dict[str, float | bool | str]) -> None:
+        self._schematic_baseline = {
+            **condition,
+            "seed": 1,
+            "generations": 1,
+            "signal": "svideo",
+            "audio": "process",
+        }
+        self.schematic.set_baseline(self._schematic_baseline)
+
     def _load_preset(self) -> None:
         name = self.preset_combo.currentText()
         if not name:
@@ -820,6 +1020,8 @@ class MainWindow(QMainWindow):
             self._set_status(str(err))
             return
         self._apply_condition(values)
+        self._set_schematic_baseline(values)
+        self._sync_schematic()
 
     def _on_preset_changed(self, _index: int) -> None:
         self._load_preset()
@@ -832,9 +1034,44 @@ class MainWindow(QMainWindow):
     def _random_seed(self) -> None:
         self.seed_spin.setValue(random.randint(0, SEED_MAX))
 
+    def _on_schematic_value_changed(self, control_id: str, value: object) -> None:
+        if self._sync_guard:
+            return
+        self._sync_guard = True
+        try:
+            if control_id in self._checks:
+                self._checks[control_id].setChecked(bool(value))
+            elif control_id in self._spins:
+                self._spins[control_id].setValue(float(value))
+            elif control_id in self._choice_boxes:
+                self._choice_boxes[control_id].setCurrentIndex(self._choice_boxes[control_id].findData(value))
+            elif control_id == "preset":
+                self.preset_combo.setCurrentText(str(value))
+            elif control_id == "seed":
+                self.seed_spin.setValue(int(value))
+            elif control_id == "generations":
+                self.generations_spin.setValue(int(value))
+            elif control_id == "signal":
+                self.signal_combo.setCurrentIndex(self.signal_combo.findData(value))
+            elif control_id == "audio":
+                self.audio_combo.setCurrentIndex(self.audio_combo.findData(value))
+        finally:
+            self._sync_guard = False
+        self._sync_schematic()
+
+    def _reset_schematic_value(self, control_id: str) -> None:
+        if control_id == "preset":
+            return
+        if control_id not in self._schematic_baseline:
+            return
+        self._on_schematic_value_changed(control_id, self._schematic_baseline[control_id])
+        self._sync_schematic()
+
     def _on_look_changed(self, *_args: object) -> None:
         if not self._loading:
             self._set_stale(True)
+            if not self._sync_guard:
+                self._sync_schematic()
 
     def _on_advanced_changed(self) -> None:
         self._advanced_error = backend.validate_advanced(self.advanced_edit.toPlainText())
@@ -894,6 +1131,7 @@ class MainWindow(QMainWindow):
         self.audio_combo.setCurrentIndex(self.audio_combo.findData(look.audio))
         self.advanced_edit.setPlainText(look.advanced)
         self._set_stale(True)
+        self._sync_schematic()
         self._set_status(f"Look loaded from {path}")
 
     def _check_loadable(self, look: Look) -> None:

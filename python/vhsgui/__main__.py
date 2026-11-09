@@ -1,4 +1,4 @@
-"""Command line entry point: python -m vhsgui [--binary PATH] [--screenshot PNG] [input]."""
+"""Command line entry point: python -m vhsgui [--schematic] [--binary PATH] [--screenshot PNG] [input]."""
 from __future__ import annotations
 
 import argparse
@@ -10,6 +10,7 @@ EXIT_FAILURE = 1
 EXIT_MISSING_TOOL = 2
 SCREENSHOT_TIMEOUT_MS = 30_000  # longest wait for the first source frame
 SCREENSHOT_POLL_MS = 50
+SCREENSHOT_SIZE = (1280, 900)  # screenshots use a stable canvas regardless of the desktop
 
 MISSING_BINARY = "vhsphys not found. Build it with: cargo build --release"
 MISSING_FFMPEG = "ffmpeg not found. Install it with your package manager, for example: apt install ffmpeg"
@@ -20,6 +21,7 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="python -m vhsgui", description="Desktop front end for vhs-phys.")
     parser.add_argument("input", nargs="?", help="video file to open")
     parser.add_argument("--binary", metavar="PATH", help="the vhsphys executable (default: search for it)")
+    parser.add_argument("--schematic", action="store_true", help="start with the phosphor schematic")
     parser.add_argument("--screenshot", metavar="PNG", help="save a picture of the window and exit")
     return parser.parse_args(argv)
 
@@ -41,6 +43,8 @@ def _run_window(args: argparse.Namespace, binary: str, ffmpeg: str, ffprobe: str
         return EXIT_FAILURE
     if args.input:
         window.open_input(args.input)
+    if args.schematic:
+        window.set_schematic_mode(True)
     window.show()
 
     if not args.screenshot:
@@ -69,7 +73,12 @@ def _run_window(args: argparse.Namespace, binary: str, ffmpeg: str, ffprobe: str
     ticker.stop()
     limit.stop()
     app.processEvents()
-    saved = window.grab().save(args.screenshot)
+    window.resize(*SCREENSHOT_SIZE)
+    app.processEvents()
+    if args.schematic:
+        window.schematic.skip_boot()
+    picture = window.grab()
+    saved = picture.save(args.screenshot)
     window.close()
     if not saved:
         print(f"Cannot save {args.screenshot}", file=sys.stderr)
