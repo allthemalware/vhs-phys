@@ -5,8 +5,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPointF, QRectF, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QPointF, QRect, QRectF, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QKeyEvent, QMouseEvent, QPainter, QPaintEvent
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from .data import Control, Primitive, SchematicData, load_data
@@ -17,10 +18,17 @@ from .paint import PaintContext, color, draw_block, draw_control, draw_hint, dra
 CANVAS_WIDTH = 1180
 CANVAS_HEIGHT = 620
 ROW_HEIGHT = 18
-TIMER_INTERVAL_MS = 40
+# A 16 Hz refresh keeps motion fluid while leaving idle repaint time for the application.
+TIMER_INTERVAL_MS = 60
 TV_MARGIN = 20
 NOISE_TILE_SIZE = 96
 NOISE_PERIOD = 24
+# Global brightness changes do not need the animation tick rate.
+FLICKER_INTERVAL_S = 0.1
+# Moving phosphor marks need room for antialiasing and their halo.
+UPDATE_MARGIN = 8.0
+# Pulses stop before the arrow head so the arrow remains part of the static layer.
+PULSE_ARROW_CLEARANCE = 11.0
 
 
 class SchematicView(QWidget):
@@ -49,6 +57,7 @@ class SchematicView(QWidget):
         self._boot_start: float | None = None
         self._boot_done = True
         self._effects = {"glow": True, "scanlines": True, "vignette": True}
+        self._flicker_frame = 0
         self._cache_revision = 0
         self._base_cache: QImage | None = None
         self._base_cache_key: tuple[Any, ...] | None = None
@@ -56,21 +65,33 @@ class SchematicView(QWidget):
         self._effect_cache_key: tuple[Any, ...] | None = None
         self._screen_cache: QImage | None = None
         self._screen_cache_key: tuple[Any, ...] | None = None
-        self._noise_tile = self._make_noise_tile()
+        self._noise_tiles: dict[float, QImage] = {}
         self._timer = QTimer(self)
         self._timer.setInterval(TIMER_INTERVAL_MS)
         self._timer.timeout.connect(self._on_timer)
+        application = QGuiApplication.instance()
+        self._application_was_active = application is None or application.applicationState() == Qt.ApplicationState.ApplicationActive
+        if application is not None:
+            application.applicationStateChanged.connect(self._on_application_state_changed)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def _make_noise_tile(self) -> QImage:
-        tile = QImage(NOISE_TILE_SIZE, NOISE_TILE_SIZE, QImage.Format.Format_RGB32)
-        for y in range(NOISE_TILE_SIZE):
-            for x in range(NOISE_TILE_SIZE):
+    def _make_noise_tile(self, device_ratio: float) -> QImage:
+        size = max(1, round(NOISE_TILE_SIZE * device_ratio))
+        tile = QImage(size, size, QImage.Format.Format_RGB32)
+        for y in range(size):
+            for x in range(size):
                 value = (x * 37 + y * 61 + x * y * 13) % 32
                 tile.setPixelColor(x, y, QColor(8 + value // 3, 38 + value, 20 + value // 2))
+        tile.setDevicePixelRatio(device_ratio)
         return tile
+
+    def _noise_tile_for(self, device_ratio: float) -> QImage:
+        key = round(device_ratio, 6)
+        if key not in self._noise_tiles:
+            self._noise_tiles[key] = self._make_noise_tile(device_ratio)
+        return self._noise_tiles[key]
 
     def _touch(self) -> None:
         self._cache_revision += 1
@@ -260,8 +281,10 @@ class SchematicView(QWidget):
         return self._clock
 
     def advance(self, seconds: float) -> None:
+        old_clock = self._clock
+        old_rects = self._animation_update_rects(old_clock)
         self._clock += max(0.0, float(seconds))
-        self.update(self._moving_update_rect())
+        self._invalidate_animation(old_clock, old_rects)
 
     def set_animated(self, animated: bool) -> None:
         self._animated = bool(animated)
@@ -490,15 +513,37 @@ class SchematicView(QWidget):
 
     def showEvent(self, event: Any) -> None:
         self._last_real = time.monotonic()
-        self._refresh_timer()
         super().showEvent(event)
+        application = QGuiApplication.instance()
+        if application is not None and not self._application_was_active and application.applicationState() == Qt.ApplicationState.ApplicationInactive and application.activeWindow() is None:
+            if self._animated and not bool(self.window().windowState() & Qt.WindowState.WindowMinimized):
+                self._timer.start()
+            return
+        self._refresh_timer()
 
     def hideEvent(self, event: Any) -> None:
         self._timer.stop()
         super().hideEvent(event)
 
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.WindowStateChange:
+            self._refresh_timer()
+
+    def _on_application_state_changed(self, state: Any) -> None:
+        if state == Qt.ApplicationState.ApplicationActive:
+            self._application_was_active = True
+        self._refresh_timer()
+
+    def _can_tick(self) -> bool:
+        application = QGuiApplication.instance()
+        if application is not None and application.applicationState() != Qt.ApplicationState.ApplicationActive:
+            if not (not self._application_was_active and application.platformName() == "offscreen" and application.activeWindow() is None and self.isVisible()):
+                return False
+        return not bool(self.window().windowState() & Qt.WindowState.WindowMinimized)
+
     def _refresh_timer(self) -> None:
-        if self.isVisible() and self._animated:
+        if self.isVisible() and self._animated and self._can_tick():
             self._last_real = time.monotonic()
             if not self._timer.isActive():
                 self._timer.start()
@@ -509,35 +554,93 @@ class SchematicView(QWidget):
         now = time.monotonic()
         elapsed = max(0.0, min(0.2, now - self._last_real))
         self._last_real = now
+        old_clock = self._clock
+        old_rects = self._animation_update_rects(old_clock)
         self._clock += elapsed
-        self.update(self._moving_update_rect())
+        self._invalidate_animation(old_clock, old_rects)
 
-    def _moving_update_rect(self) -> Any:
-        points = [point for wire in self._data.wires for point in wire.points]
-        screen = self._zoom_canvas_rect() if self._zoomed else self._screen_canvas_rect()
-        if not screen.isNull():
-            points.extend([(screen.left(), screen.top()), (screen.right(), screen.bottom())])
+    def _flicker_index(self, clock: float) -> int:
+        return math.floor(max(0.0, clock) / FLICKER_INTERVAL_S)
+
+    def _wire_point(self, wire: Any, distance: float) -> tuple[float, float] | None:
+        left = distance
+        for start, end in zip(wire.points, wire.points[1:]):
+            length = math.hypot(end[0] - start[0], end[1] - start[1])
+            if left <= length:
+                ratio = left / max(length, 1e-6)
+                return start[0] + (end[0] - start[0]) * ratio, start[1] + (end[1] - start[1]) * ratio
+            left -= length
+        return None
+
+    def _wire_length(self, wire: Any) -> float:
+        return sum(math.hypot(end[0] - start[0], end[1] - start[1]) for start, end in zip(wire.points, wire.points[1:]))
+
+    def _animation_update_rects(self, clock: float) -> list[QRect]:
+        if self.boot_progress() < 1.0:
+            return [self.rect()]
+        if not self._animated:
+            return self._flash_update_rects(clock)
+        canvas_rects: list[QRectF] = []
+        for index, wire in enumerate(self._data.wires):
+            distance = (clock * self._data.animation.pulse_speed + index * self._data.animation.pulse_spacing / 2) % max(self._wire_length(wire), 1.0)
+            for _ in range(3):
+                if distance < max(0.0, self._wire_length(wire) - PULSE_ARROW_CLEARANCE):
+                    point = self._wire_point(wire, distance)
+                    if point is not None:
+                        canvas_rects.append(QRectF(point[0] - UPDATE_MARGIN, point[1] - UPDATE_MARGIN, UPDATE_MARGIN * 2, UPDATE_MARGIN * 2))
+                distance += self._data.animation.pulse_spacing
         for instance in self._data.instances:
             for primitive in self._data.glyphs[instance.glyph].primitives:
                 if primitive.kind == "reel":
-                    radius = primitive.args[2] * instance.scale + 8
+                    radius = primitive.args[2] * instance.scale + UPDATE_MARGIN
                     center_x = instance.x + primitive.args[0] * instance.scale
                     center_y = instance.y + primitive.args[1] * instance.scale
-                    points.extend([(center_x - radius, center_y - radius), (center_x + radius, center_y + radius)])
-        if not points:
-            return self.rect()
-        left = min(point[0] for point in points) - 12
-        top = min(point[1] for point in points) - 12
-        right = max(point[0] for point in points) + 12
-        bottom = max(point[1] for point in points) + 12
-        return self._canvas_rect(left, top, right - left, bottom - top).toAlignedRect()
+                    canvas_rects.append(QRectF(center_x - radius, center_y - radius, radius * 2, radius * 2))
+        screen = self._zoom_canvas_rect() if self._zoomed else self._screen_canvas_rect()
+        if not screen.isNull():
+            canvas_rects.append(screen.adjusted(-UPDATE_MARGIN, -UPDATE_MARGIN, UPDATE_MARGIN, UPDATE_MARGIN))
+        canvas_rects.extend(self._canvas_rect_for_controls(self._flash_signature()))
+        return [self._canvas_update_rect(rect) for rect in canvas_rects]
+
+    def _flash_update_rects(self, clock: float) -> list[QRect]:
+        ids = [control_id for control_id, until in self._flash_until.items() if until > clock]
+        return [self._canvas_update_rect(rect) for rect in self._canvas_rect_for_controls(ids)]
+
+    def _canvas_rect_for_controls(self, control_ids: Any) -> list[QRectF]:
+        result = []
+        for control_id in control_ids:
+            control = self._controls[control_id]
+            result.append(QRectF(control.x - UPDATE_MARGIN, control.y - UPDATE_MARGIN, control.width + UPDATE_MARGIN * 2, ROW_HEIGHT + UPDATE_MARGIN * 2))
+        return result
+
+    def _canvas_update_rect(self, rect: QRectF) -> QRect:
+        return self._canvas_rect(rect.x(), rect.y(), rect.width(), rect.height()).toAlignedRect()
+
+    def _moving_update_rect(self) -> QRect:
+        rects = self._animation_update_rects(self._clock)
+        if not rects:
+            return QRect()
+        result = rects[0]
+        for rect in rects[1:]:
+            result = result.united(rect)
+        return result
+
+    def _invalidate_animation(self, old_clock: float, old_rects: list[QRect]) -> None:
+        new_rects = self._animation_update_rects(self._clock)
+        self._flicker_frame = self._flicker_index(self._clock)
+        if self._flicker and self._animated and self._flicker_index(old_clock) != self._flicker_frame:
+            self.update()
+            return
+        for rect in old_rects + new_rects:
+            self.update(rect)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
         painter.fillRect(event.rect(), color(self._data.theme, "bg"))
         scale, ox, oy = self._scale()
         painter.translate(ox, oy)
-        self._paint_output(painter, round(CANVAS_WIDTH * scale * self.devicePixelRatioF()), flicker=True)
+        device_ratio = self.devicePixelRatioF()
+        self._paint_output(painter, round(CANVAS_WIDTH * scale * device_ratio), flicker=True, logical_scale=scale, device_ratio=device_ratio)
         painter.end()
 
     def render_to_image(self, width: int) -> QImage:
@@ -545,7 +648,7 @@ class SchematicView(QWidget):
         image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
         image.fill(color(self._data.theme, "bg"))
         painter = QPainter(image)
-        self._paint_output(painter, width, flicker=False)
+        self._paint_output(painter, width, flicker=False, logical_scale=width / CANVAS_WIDTH, device_ratio=1.0)
         painter.end()
         return image
 
@@ -559,8 +662,8 @@ class SchematicView(QWidget):
     def _flash_signature(self) -> tuple[str, ...]:
         return tuple(sorted(control_id for control_id, until in self._flash_until.items() if until > self._clock))
 
-    def _ensure_base_cache(self, width: int) -> QImage:
-        key = (width, round(width * CANVAS_HEIGHT / CANVAS_WIDTH), self._cache_revision, self._flash_signature(), self._theme_key(), self._effects["glow"])
+    def _ensure_base_cache(self, width: int, device_ratio: float) -> QImage:
+        key = (width, round(width * CANVAS_HEIGHT / CANVAS_WIDTH), round(device_ratio, 6), self._cache_revision, self._flash_signature(), self._theme_key(), self._effects["glow"])
         if self._base_cache is not None and self._base_cache_key == key:
             return self._base_cache
         height = key[1]
@@ -592,13 +695,14 @@ class SchematicView(QWidget):
             draw_control(painter, ctx, control, self._values[control.id], self._fraction(control, self._values[control.id]), control.id in active_ids, self.is_edited(control.id), control.id in flashing_ids, baseline_fraction)
         draw_hint(painter, ctx, self._data.hint, self._fit_hint(self.hint_text()))
         painter.end()
+        image.setDevicePixelRatio(device_ratio)
         self._base_cache = image
         self._base_cache_key = key
         return image
 
-    def _ensure_effect_cache(self, width: int) -> QImage:
+    def _ensure_effect_cache(self, width: int, device_ratio: float) -> QImage:
         height = round(width * CANVAS_HEIGHT / CANVAS_WIDTH)
-        key = (width, height, self._theme_key(), self._effects["scanlines"], self._effects["vignette"])
+        key = (width, height, round(device_ratio, 6), self._theme_key(), self._effects["scanlines"], self._effects["vignette"])
         if self._effect_cache is not None and self._effect_cache_key == key:
             return self._effect_cache
         image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
@@ -609,28 +713,30 @@ class SchematicView(QWidget):
         if self._effects["vignette"]:
             draw_vignette(painter, self._data.theme, width, height)
         painter.end()
+        image.setDevicePixelRatio(device_ratio)
         self._effect_cache = image
         self._effect_cache_key = key
         return image
 
-    def _fitted_screen(self, rect: QRectF, width: int) -> QImage | None:
+    def _fitted_screen(self, rect: QRectF, width: int, device_ratio: float) -> QImage | None:
         if self._screen_image is None or self._screen_image.isNull():
             return None
-        target_width = max(1, round(rect.width() * width / CANVAS_WIDTH))
-        target_height = max(1, round(rect.height() * width / CANVAS_WIDTH))
-        key = (self._screen_image.cacheKey(), target_width, target_height)
+        target_width = max(1, round(rect.width() * device_ratio))
+        target_height = max(1, round(rect.height() * device_ratio))
+        key = (self._screen_image.cacheKey(), target_width, target_height, round(device_ratio, 6))
         if self._screen_cache is None or self._screen_cache_key != key:
             self._screen_cache = self._screen_image.scaled(target_width, target_height, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            self._screen_cache.setDevicePixelRatio(device_ratio)
             self._screen_cache_key = key
         return self._screen_cache
 
-    def _paint_output(self, painter: QPainter, width: int, flicker: bool) -> None:
+    def _paint_output(self, painter: QPainter, width: int, flicker: bool, *, logical_scale: float, device_ratio: float) -> None:
         height = round(width * CANVAS_HEIGHT / CANVAS_WIDTH)
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
-        painter.scale(width / CANVAS_WIDTH, width / CANVAS_WIDTH)
-        base = self._ensure_base_cache(width)
+        painter.scale(logical_scale, logical_scale)
+        base = self._ensure_base_cache(width, device_ratio)
         progress = self.boot_progress()
         if progress > 0.0:
             painter.save()
@@ -646,18 +752,19 @@ class SchematicView(QWidget):
             painter.save()
             if progress < 1.0:
                 painter.setClipRect(QRectF(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT * progress), Qt.ClipOperation.IntersectClip)
-            self._draw_moving(painter, width)
+            self._draw_moving(painter, width, device_ratio)
             painter.restore()
         if self._zoomed:
             painter.fillRect(QRectF(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT), color(self._data.theme, "bg", 150))
-            self._draw_tv(painter, self._zoom_canvas_rect(), width)
-        painter.drawImage(QRectF(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT), self._ensure_effect_cache(width))
+            self._draw_tv(painter, self._zoom_canvas_rect(), width, device_ratio)
+        painter.drawImage(QRectF(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT), self._ensure_effect_cache(width, device_ratio))
         if flicker and self._flicker and self._animated:
-            amount = 0.5 * (1.0 + math.sin(self._clock * 2.0)) * self._data.animation.flicker
+            flicker_time = self._flicker_frame * FLICKER_INTERVAL_S
+            amount = 0.5 * (1.0 + math.sin(flicker_time * 2.0)) * self._data.animation.flicker
             painter.fillRect(QRectF(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT), color(self._data.theme, "bg", round(amount * 255)))
         painter.restore()
 
-    def _draw_moving(self, painter: QPainter, width: int) -> None:
+    def _draw_moving(self, painter: QPainter, width: int, device_ratio: float) -> None:
         # The cached wire and reel bodies already provide the broad phosphor halo;
         # the small moving marks need only their crisp core on each tick.
         ctx = PaintContext(self._data.theme, False)
@@ -670,13 +777,13 @@ class SchematicView(QWidget):
                 if primitive.kind == "reel":
                     draw_reel_motion(painter, ctx, primitive, instance, reel_phase)
         rect = self._screen_canvas_rect()
-        self._draw_tv(painter, rect, width)
+        self._draw_tv(painter, rect, width, device_ratio)
 
-    def _draw_tv(self, painter: QPainter, rect: QRectF, width: int) -> None:
+    def _draw_tv(self, painter: QPainter, rect: QRectF, width: int, device_ratio: float) -> None:
         if rect.isNull():
             return
         seed = int(self._clock * NOISE_PERIOD) if self._animated else 0
-        draw_screen(painter, self._context(), rect, self._fitted_screen(rect, width), self._noise_tile, seed)
+        draw_screen(painter, self._context(), rect, self._fitted_screen(rect, width, device_ratio), self._noise_tile_for(device_ratio), seed)
 
     def _fit_hint(self, value: str) -> str:
         metrics = QFontMetricsF(self._font(self._data.hint.size))

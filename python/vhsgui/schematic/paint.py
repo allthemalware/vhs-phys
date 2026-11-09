@@ -16,6 +16,8 @@ WIRE_COLORS = {"video": "phosphor", "audio": "dim", "dub": "hot", "power": "fain
 WIRE_DASHES = {"video": (), "audio": (5.0, 5.0), "dub": (12.0, 5.0), "power": (2.0, 7.0)}
 ARROW_CLEARANCE = 11.0
 PULSE_SPACING = 70.0
+# A flashing edited value stays amber while moving toward the hot tier.
+EDIT_FLASH_MIX = 0.45
 
 
 @dataclass(frozen=True)
@@ -24,9 +26,12 @@ class PaintContext:
     glow: bool = True
 
 
-def color(theme: Theme, tier: str, alpha: int = 255) -> QColor:
-    name = TIER_NAMES.get(tier, tier)
-    result = QColor(getattr(theme, name))
+def color(theme: Theme, tier: str | QColor, alpha: int = 255) -> QColor:
+    if isinstance(tier, QColor):
+        result = QColor(tier)
+    else:
+        name = TIER_NAMES.get(tier, tier)
+        result = QColor(getattr(theme, name))
     result.setAlpha(max(0, min(255, alpha)))
     return result
 
@@ -56,7 +61,7 @@ def draw_path(
     painter: QPainter,
     ctx: PaintContext,
     path: QPainterPath,
-    tier: str = "norm",
+    tier: str | QColor = "norm",
     weight: str = "thin",
     dashed: tuple[float, float] = (),
 ) -> None:
@@ -263,6 +268,17 @@ def _control_text(control: Control, value: Any) -> str:
 
 def draw_control(painter: QPainter, ctx: PaintContext, control: Control, value: Any, fraction: float, active: bool, edited: bool, flashing: bool, baseline_fraction: float | None) -> None:
     tier = "hot" if active or flashing else "norm"
+    value_tier: str | QColor = tier
+    if edited:
+        value_tier = color(ctx.theme, "warn")
+        if flashing:
+            warn = color(ctx.theme, "warn")
+            hot = color(ctx.theme, "hot")
+            value_tier = QColor(
+                round(warn.red() * (1 - EDIT_FLASH_MIX) + hot.red() * EDIT_FLASH_MIX),
+                round(warn.green() * (1 - EDIT_FLASH_MIX) + hot.green() * EDIT_FLASH_MIX),
+                round(warn.blue() * (1 - EDIT_FLASH_MIX) + hot.blue() * EDIT_FLASH_MIX),
+            )
     value_text = _control_text(control, value)
     set_font(painter, ctx.theme)
     metrics = QFontMetricsF(painter.font())
@@ -275,7 +291,7 @@ def draw_control(painter: QPainter, ctx: PaintContext, control: Control, value: 
     dot_end = value_x - value_width - 7
     if dot_end > dot_start:
         painter.drawText(QPointF(dot_start, control.y + 12), "." * max(1, int((dot_end - dot_start) / max(metrics.horizontalAdvance("."), 1))))
-    text(painter, ctx, value_text, value_x, control.y + 12, tier, align="r")
+    text(painter, ctx, value_text, value_x, control.y + 12, value_tier, align="r")
     track_y = control.y + 16.5
     track = QPainterPath()
     track.moveTo(control.x, track_y)
@@ -292,18 +308,12 @@ def draw_control(painter: QPainter, ctx: PaintContext, control: Control, value: 
         ticks.moveTo(control.x + control.width, control.y + 13)
         ticks.lineTo(control.x + control.width, control.y + 18)
         draw_path(painter, ctx, ticks, "hot", "hair")
-    if edited:
-        mark = QPainterPath()
-        mark.moveTo(control.x - 17, control.y + 4)
-        mark.lineTo(control.x - 8, control.y + 4)
-        mark.lineTo(control.x - 12, control.y + 12)
-        draw_path(painter, ctx, mark, "warn", "thin")
-        if baseline_fraction is not None:
-            base = QPainterPath()
-            x = control.x + control.width * baseline_fraction
-            base.moveTo(x, track_y - 4)
-            base.lineTo(x, track_y + 3)
-            draw_path(painter, ctx, base, "warn", "thin")
+    if edited and baseline_fraction is not None:
+        base = QPainterPath()
+        x = control.x + control.width * baseline_fraction
+        base.moveTo(x, track_y - 4)
+        base.lineTo(x, track_y + 3)
+        draw_path(painter, ctx, base, "warn", "thin")
 
 
 def draw_hint(painter: QPainter, ctx: PaintContext, hint: Hint, value: str) -> None:
@@ -336,7 +346,9 @@ def draw_screen(painter: QPainter, ctx: PaintContext, rect: QRectF, fitted_image
     painter.setClipRect(rect)
     painter.fillRect(rect, QColor(0, 0, 0))
     if fitted_image is not None and not fitted_image.isNull():
-        painter.drawImage(QPointF(rect.x() + (rect.width() - fitted_image.width()) / 2, rect.y() + (rect.height() - fitted_image.height()) / 2), fitted_image)
+        image_width = fitted_image.width() / fitted_image.devicePixelRatio()
+        image_height = fitted_image.height() / fitted_image.devicePixelRatio()
+        painter.drawImage(QPointF(rect.x() + (rect.width() - image_width) / 2, rect.y() + (rect.height() - image_height) / 2), fitted_image)
     else:
         painter.setBrushOrigin(QPointF(rect.x() - snow_offset, rect.y() - snow_offset))
         painter.fillRect(rect, QBrush(snow_tile))
