@@ -894,6 +894,40 @@ def test_bad_data_is_refused_clearly(app, tmp_path):
         SchematicView(data_dir=tmp_path)
 
 
+_DPR_SCRIPT = """
+import sys
+import numpy as np
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import QApplication
+app = QApplication([])
+from vhsgui.schematic.view import SchematicView
+def rgb(img):
+    img = img.convertToFormat(QImage.Format.Format_RGB32)
+    w, h = img.width(), img.height()
+    return np.frombuffer(img.constBits(), np.uint8).reshape(h, img.bytesPerLine() // 4, 4)[:, :w, [2, 1, 0]].astype(float)
+v = SchematicView()
+v.set_animated(False)
+v.set_flicker(False)
+v.resize(590, 310)
+painted = rgb(v.grab().toImage())
+rendered = rgb(v.render_to_image(round(590 * v.devicePixelRatioF())))
+assert painted.shape == rendered.shape, (painted.shape, rendered.shape)
+print(float(np.abs(painted - rendered).mean()))
+"""
+
+
+@pytest.mark.parametrize("scale", ["1.25", "1.5", "2"])
+def test_a_high_dpi_screen_shows_the_same_picture(scale):
+    """On a screen with a scale factor the widget is painted at device resolution, once, not twice."""
+    import subprocess
+    import sys
+
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", QT_SCALE_FACTOR=scale, PYTHONPATH=str(DATA.parents[1]))
+    result = subprocess.run([sys.executable, "-c", _DPR_SCRIPT], env=env, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    assert float(result.stdout.strip().splitlines()[-1]) < 2.0, f"at scale factor {scale} the painted widget differs from the rendered picture"
+
+
 def test_painting_is_fast_enough_to_animate(view):
     view.set_screen_image(picture())
     view.grab()
