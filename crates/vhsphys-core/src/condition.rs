@@ -225,6 +225,9 @@ impl Condition {
             h.azimuth_error_deg = (0.1 + 0.9 * self.head_wear) * (0.6 + 0.4 * g().abs());
             h.cnr_db = 40.0 - 6.0 * self.head_wear - 2.5 * deck_af;
             h.media_am_noise = 0.02 + 0.03 * tape_af;
+            // [est] the deck switches to the narrower head pair of a four-head machine at
+            // LP and EP, so each head is as wide as the track it reads
+            h.width_um = self.tape_speed.track_pitch_um();
             h.gain *= 1.0 - 0.10 * (self.tape_age_years / 30.0).min(1.0) * (0.5 + self.tape_storage);
             // resonance (tuned network) drifts with its capacitor
             h.q_freq_hz = 4.8e6 * (1.0 + 0.04 * deck_af * g());

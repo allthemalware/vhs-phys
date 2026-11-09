@@ -147,14 +147,22 @@ pub fn nominal_fm_amplitude(f: f64, h_samples: f64) -> f64 {
 
 /// Add head-amplifier noise (white, set by the nominal CNR) and media AM noise,
 /// then apply the head resonance. `rng` must be unique to this track.
+///
+/// The noise is media dominated: its power is proportional to the track width the head
+/// reads, the signal power to the square of it. The CNR therefore falls by
+/// `10 log10(width / 58 um)` dB for a narrower head (about 3.0 dB at LP, 4.8 dB at EP),
+/// and the media AM noise, an amplitude, scales with `sqrt(58 / width)`. The reference
+/// is the SP track pitch, for which both factors are exactly 1.
 pub fn head_front_end(buf: &mut [f32], hp: &HeadParams, rng: &mut Rng) {
     let a_nom = nominal_fm_amplitude(3.9e6, hp.h0_samples());
+    let cnr_db = hp.cnr_db + 10.0 * (hp.width_um / TRACK_PITCH_UM).log10();
+    let media_am = hp.media_am_noise * (TRACK_PITCH_UM / hp.width_um).sqrt();
     // white noise over fs/2 whose 6 MHz share gives the requested CNR
-    let p_band = a_nom * a_nom / 2.0 / 10f64.powf(hp.cnr_db / 10.0);
+    let p_band = a_nom * a_nom / 2.0 / 10f64.powf(cnr_db / 10.0);
     let sigma = (p_band * (FS_RF / 2.0) / 6.0e6).sqrt() as f32;
     // slowly varying multiplicative (media) noise: one-pole filtered Gaussian
     let mut am = Biquad::one_pole_lp(0.5e6, FS_RF);
-    let am_gain = (hp.media_am_noise * (FS_RF / 2.0 / 0.5e6).sqrt() * 0.8) as f32;
+    let am_gain = (media_am * (FS_RF / 2.0 / 0.5e6).sqrt() * 0.8) as f32;
     let mut q = Biquad::peaking(hp.q_freq_hz, hp.q_q, hp.q_gain_db, FS_RF);
     let g = hp.gain as f32;
     for v in buf.iter_mut() {

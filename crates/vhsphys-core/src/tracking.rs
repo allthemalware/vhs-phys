@@ -8,6 +8,7 @@
 
 use serde::{Deserialize, Serialize};
 use crate::consts::*;
+use crate::format::TapeSpeed;
 use crate::head::STRIDE;
 use crate::rng::Rng;
 
@@ -36,14 +37,16 @@ impl Default for TrackingParams {
 }
 
 /// Lateral weight (fraction of the head width over the track) of track `n + j`
-/// at every control stride of the window, for j in `NEIGHBOURS`.
-pub fn lateral_weights(p: &TrackingParams, head_width_um: f64, seed: u64, n: i64, len_rf: usize, g0: i64) -> [Vec<f32>; 5] {
+/// at every control stride of the window, for j in `NEIGHBOURS`. The track pitch is the
+/// one of the recording speed, so the same offset in um moves the head across a larger
+/// fraction of a narrow LP or EP track.
+pub fn lateral_weights(p: &TrackingParams, speed: TapeSpeed, head_width_um: f64, seed: u64, n: i64, len_rf: usize, g0: i64) -> [Vec<f32>; 5] {
     let m = len_rf / STRIDE + 3;
     let mut rng = Rng::new(seed, STREAM_TRACKING, n);
     let wander = p.wander_um * rng.gauss() as f64;
     let g_in = switch_time(n);
     let w = head_width_um;
-    let pitch = TRACK_PITCH_UM;
+    let pitch = speed.track_pitch_um();
     let mut out: [Vec<f32>; 5] = std::array::from_fn(|_| vec![0.0f32; m]);
     for i in 0..m {
         let g = g0 + (i * STRIDE) as i64;
@@ -65,7 +68,7 @@ mod tests {
 
     #[test]
     fn perfect_tracking_reads_only_the_own_track() {
-        let w = lateral_weights(&TrackingParams::default(), 58.0, 1, 4, FIELD_RF, 0);
+        let w = lateral_weights(&TrackingParams::default(), TapeSpeed::Sp, 58.0, 1, 4, FIELD_RF, 0);
         assert!(w[2].iter().all(|v| (*v - 1.0).abs() < 1e-6));
         assert!(w[1].iter().chain(w[3].iter()).all(|v| *v == 0.0));
     }
@@ -73,7 +76,7 @@ mod tests {
     #[test]
     fn half_pitch_offset_splits_the_head_between_two_tracks() {
         let p = TrackingParams { offset_um: 29.0, ..Default::default() };
-        let w = lateral_weights(&p, 58.0, 1, 4, FIELD_RF, 0);
+        let w = lateral_weights(&p, TapeSpeed::Sp, 58.0, 1, 4, FIELD_RF, 0);
         assert!((w[2][100] - 0.5).abs() < 1e-5 && (w[3][100] - 0.5).abs() < 1e-5);
         // weights always sum to one while the head is over recorded tape
         for i in [10usize, 1000, 9000] {
@@ -88,7 +91,7 @@ mod tests {
         // offset 29 um with a 58 um slope: head centre goes from 0 to +58 um (track n -> n+1)
         let p = TrackingParams { offset_um: 29.0, slope_um: 58.0, ..Default::default() };
         let g_in = switch_time(4);
-        let w = lateral_weights(&p, 58.0, 1, 4, FIELD_RF, g_in);
+        let w = lateral_weights(&p, TapeSpeed::Sp, 58.0, 1, 4, FIELD_RF, g_in);
         let at = |f: f64| (f * FIELD_RF as f64) as usize / STRIDE;
         assert!(w[2][at(0.05)] > 0.9);
         assert!(w[3][at(0.5)] > 0.4 && w[3][at(0.5)] < 0.6);

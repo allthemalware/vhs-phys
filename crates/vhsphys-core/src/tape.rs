@@ -7,8 +7,8 @@
 //!
 //! * a longitudinal crease or edge defect appears at a fixed picture height on
 //!   every field it spans;
-//! * a point defect moves by about 1.5 lines per field (the tape advance per
-//!   field equals 1.5 H of head travel).
+//! * a point defect moves by about 1.5 lines per field at SP (the tape advance per
+//!   field equals 1.5 H of head travel), 0.75 at LP and 0.5 at EP.
 //!
 //! Defects are generated on demand from a spatial hash, so any tape region is
 //! reproducible without storing it, and the cost per track is small.
@@ -22,6 +22,7 @@
 
 use serde::{Deserialize, Serialize};
 use crate::consts::*;
+use crate::format::TapeSpeed;
 use crate::head::{Controls, STRIDE};
 use crate::rng::Rng;
 
@@ -63,6 +64,10 @@ pub struct TapeParams {
     pub creases_per_m: f64,
     pub crease_lift_um: f64,
     pub crease_width_um: f64,
+    /// Recording speed. It sets the track angle and the tape advance per field. It is
+    /// copied from `Params.speed` when the tape is built, so it is not a separate setting.
+    #[serde(skip)]
+    pub speed: TapeSpeed,
 }
 
 impl Default for TapeParams {
@@ -86,6 +91,7 @@ impl Default for TapeParams {
             creases_per_m: 0.0,
             crease_lift_um: 0.8,
             crease_width_um: 60.0,
+            speed: TapeSpeed::Sp,
         }
     }
 }
@@ -99,15 +105,17 @@ struct Geo {
     advance: f64,
 }
 
-fn geo() -> Geo {
-    let a = TRACK_ANGLE_DEG.to_radians();
+/// Track geometry of a recording made at `speed`: a slower tape advances less between
+/// two fields and leaves a slightly shallower track.
+fn geo(speed: TapeSpeed) -> Geo {
+    let a = speed.track_angle_deg().to_radians();
     Geo {
         sin_a: a.sin(),
         cos_a: a.cos(),
         tan_a: a.tan(),
         len_um: track_length_um(),
         v_lo: (VIDEO_CENTRE_MM - VIDEO_AREA_MM / 2.0) * 1000.0,
-        advance: TAPE_SPEED_SP / (2.0 * FRAME_RATE) * 1.0e6,
+        advance: speed.advance_um(),
     }
 }
 
@@ -146,7 +154,7 @@ impl Tape {
 
     /// All point defects whose cell intersects track `n`'s neighbourhood.
     pub fn defects_near_track(&self, n: i64) -> Vec<Defect> {
-        let g = geo();
+        let g = geo(self.p.speed);
         let u_n = self.p.position_m * 1e6 + n as f64 * g.advance;
         let (iu0, iu1) = (
             ((u_n / CELL_U).floor() as i64) - 1,
@@ -190,7 +198,7 @@ impl Tape {
     /// Paint spacing (`dd`) and magnetisation (`mag`) for track `n` over the
     /// window starting at global RF index `g0`.
     pub fn paint(&self, n: i64, g0: i64, head_width_um: f64, ctl: &mut Controls) {
-        let g = geo();
+        let g = geo(self.p.speed);
         let u_n = self.p.position_m * 1e6 + n as f64 * g.advance;
         let g_in = switch_time(n);
         let g_out = switch_time(n + 1);

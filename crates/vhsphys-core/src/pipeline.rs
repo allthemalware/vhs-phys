@@ -76,7 +76,9 @@ struct Ctx {
 
 impl Ctx {
     fn new(p: Params) -> Self {
-        let (mech, tape) = (Mech::new(p.mech.clone(), p.seed), Tape::new(p.tape.clone(), p.seed));
+        let mut tape_p = p.tape.clone();
+        tape_p.speed = p.speed;
+        let (mech, tape) = (Mech::new(p.mech.clone(), p.seed), Tape::new(tape_p, p.seed));
         Self { p, mech, tape }
     }
 }
@@ -137,7 +139,7 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64) -> Ve
             *v += hp.extra_spacing_um as f32;
         }
     }
-    let w = lateral_weights(&p.tracking, hp.width_um, p.seed, n, len, g0);
+    let w = lateral_weights(&p.tracking, p.speed, hp.width_um, p.seed, n, len, g0);
     let h0 = hp.h0_samples();
     let mut buf = vec![0.0f32; len];
     render_pulses(&trans[&n], 0.0, &ctl, Some(&w[2]), h0, &mut buf);
@@ -163,7 +165,7 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64) -> Ve
             c
         });
         let mut nb = vec![0.0f32; len];
-        render_pulses(tr, -(j as f64) * ADJACENT_TRACK_OFFSET_RF as f64, nctl, Some(&w[k]), h0, &mut nb);
+        render_pulses(tr, -(j as f64) * p.speed.adjacent_track_offset_rf(), nctl, Some(&w[k]), h0, &mut nb);
         if j.abs() % 2 == 1 {
             azimuth_smooth(&mut nb, hp.width_um * wmax as f64, 2.0 * AZIMUTH_DEG);
         }
