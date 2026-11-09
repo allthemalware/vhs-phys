@@ -943,6 +943,27 @@ def test_a_high_dpi_screen_shows_the_same_picture(scale):
     assert float(result.stdout.strip().splitlines()[-1]) < 2.0, f"at scale factor {scale} the painted widget differs from the rendered picture"
 
 
+def test_the_page_of_the_outside_world_loads_and_draws_like_the_circuit(app):
+    """A second drawing in its own folder: the same engine, its own controls, a picture on its own TV."""
+    folder = DATA / "outside"
+    layout = json.loads((folder / "layout.json").read_text())
+    other = SchematicView(data_dir=folder)
+    other.resize(CW, CH)
+    assert other.control_ids() == [c["id"] for c in layout["controls"]]
+    assert not set(other.control_ids()) & set(SchematicView().control_ids())
+    other.set_screen_image(picture())
+    other.set_animated(False)
+    a = shot(other)
+    assert lit(a) / a[..., 0].size > 0.01 and other.screen_rect() is not None
+    r = other.control_rect(other.control_ids()[3])
+    seen = []
+    other.valueChanged.connect(lambda cid, v: seen.append(cid))
+    press(other, QPointF(r.left() + 0.9 * r.width(), r.top() + 0.4 * r.height()))
+    release(other, QPointF(r.left() + 0.9 * r.width(), r.top() + 0.4 * r.height()))
+    assert seen == [other.control_ids()[3]]
+    other.deleteLater()
+
+
 def test_painting_is_fast_enough_to_animate(view):
     view.set_screen_image(picture())
     view.grab()

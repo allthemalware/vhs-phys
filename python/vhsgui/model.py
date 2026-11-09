@@ -43,7 +43,17 @@ class GuiError(Exception):
 # The condition: the high-level knobs of the core (`[condition]` in a config file)
 # ---------------------------------------------------------------------------
 
-GROUPS = ("Tape", "Heads and drum", "Playback deck", "Transport and tracking", "Recording deck")
+GROUPS = (
+    "Tape",
+    "Heads and drum",
+    "Playback deck",
+    "Transport and tracking",
+    "Recording deck",
+    "Interference: phone and radio",
+    "Interference: mains and ground",
+    "Interference: magnets",
+    "Interference: coupling",
+)
 
 
 @dataclass(frozen=True)
@@ -80,8 +90,6 @@ CONDITION_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("deck_temp_c", "Capacitor temperature", "Playback deck", "float", 20, 90, 1, "°C", "Temperature around the capacitors; their life halves per 10 °C."),
     FieldSpec("deck_humidity", "Humidity", "Playback deck", "float", 0, 1, 0.01, "", "Drifts resistor values: emphasis network, detuned discriminator."),
     FieldSpec("psu_smps", "Switch-mode supply", "Playback deck", "bool", help="Switch-mode instead of a linear supply: fine herringbone instead of hum bars."),
-    FieldSpec("mains_hz", "Mains frequency", "Playback deck", "float", 50, 60, 10, "Hz", "Frequency of the hum."),
-    FieldSpec("mains_sag", "Mains sag", "Playback deck", "float", 0, 0.2, 0.005, "", "Fraction the mains is low (0.1 = 10 %); tips a tired supply into ripple."),
     # ---- transport and tracking ----
     FieldSpec("tracking_error_um", "Tracking error", "Transport and tracking", "float", -40, 40, 0.5, "µm", "Head offset from the track centre: noise band and crosstalk."),
     FieldSpec("tracking_slope_um", "Tracking slope", "Transport and tracking", "float", -100, 100, 1, "µm", "Change of the offset along each track: sweeps a noise band across the picture."),
@@ -89,6 +97,28 @@ CONDITION_FIELDS: tuple[FieldSpec, ...] = (
     # ---- recording deck ----
     FieldSpec("rec_deck_age_years", "Recorder age", "Recording deck", "float", 0, 50, 0.5, "years", "Age of the deck that made the recording."),
     FieldSpec("rec_deck_temp_c", "Recorder temperature", "Recording deck", "float", 20, 90, 1, "°C", "Temperature around that deck's capacitors."),
+    # ---- outside the circuit: phone and radio ----
+    FieldSpec("phone_mode", "Phone", "Interference: phone and radio", "choice", help="A mobile phone transmitting near the equipment. GSM makes the classic 217 Hz buzz, GPRS uses two slots per frame, LTE sends random 1 ms bursts.", choices=("off", "gsm", "gprs", "lte")),
+    FieldSpec("phone_distance_cm", "Phone distance", "Interference: phone and radio", "float", 2, 200, 1, "cm", "How far the phone is from the equipment. The field falls with distance, the rectified buzz with its square."),
+    FieldSpec("radio_mod", "Radio", "Interference: phone and radio", "choice", help="A radio transmitter nearby: an AM broadcast, a plain carrier or single-sideband voice.", choices=("off", "am", "cw", "ssb")),
+    FieldSpec("radio_freq_mhz", "Radio frequency", "Interference: phone and radio", "float", 0.5, 19, 0.05, "MHz", "Carrier frequency. Near 3.4 to 4.4 MHz it beats with the luma FM carrier, near 0.63 MHz with the colour-under carrier."),
+    FieldSpec("radio_field_vpm", "Radio field", "Interference: phone and radio", "float", 0, 10, 0.1, "V/m", "Field strength at the equipment, before the shielding of the case."),
+    # ---- outside the circuit: mains and ground ----
+    FieldSpec("mains_hz", "Mains frequency", "Interference: mains and ground", "float", 47, 63, 0.05, "Hz", "The real mains frequency. The video runs on its own crystal at 59.94 Hz, so hum bars crawl at the difference."),
+    FieldSpec("mains_sag", "Mains sag", "Interference: mains and ground", "float", 0, 0.2, 0.005, "", "Fraction the mains is low (0.1 = 10 %); tips a tired supply into ripple."),
+    FieldSpec("ground_loop_mv", "Ground loop", "Interference: mains and ground", "float", 0, 500, 5, "mV", "Voltage between the grounds of the deck and the TV: hum bars from the mains in the picture and the sound."),
+    FieldSpec("stray_field_ut", "Stray hum field", "Interference: mains and ground", "float", 0, 200, 1, "µT", "Stray mains-frequency magnetic field from a transformer or motor: it induces hum in the audio head and waves the picture on the tube."),
+    FieldSpec("dimmer_angle_deg", "Dimmer firing", "Interference: mains and ground", "float", 0, 170, 1, "°", "A phase-cut dimmer on the same circuit rings the supply and the head leads twice per mains cycle. 0 = none."),
+    # ---- outside the circuit: magnets ----
+    FieldSpec("crt_magnet", "Tube magnet", "Interference: magnets", "choice", help="A magnet near the picture tube bends the electron beam: the picture warps and the colours stain.", choices=("none", "fridge", "neodymium", "speaker")),
+    FieldSpec("crt_magnet_z_cm", "Tube magnet position", "Interference: magnets", "float", 0, 35, 0.5, "cm", "Along the tube from the electron gun (0) to the screen (35)."),
+    FieldSpec("crt_magnet_cm", "Tube magnet distance", "Interference: magnets", "float", 0, 40, 0.5, "cm", "Distance of the magnet from the axis of the tube."),
+    FieldSpec("crt_magnet_angle_deg", "Tube magnet angle", "Interference: magnets", "float", 0, 360, 5, "°", "Position around the tube: 0 = right, 90 = top."),
+    FieldSpec("head_magnet", "Head magnet", "Interference: magnets", "choice", help="A magnet near the head drum saturates the head core and erases tape: the signal fades, then the picture is lost.", choices=("none", "fridge", "neodymium", "speaker")),
+    FieldSpec("head_magnet_cm", "Head magnet distance", "Interference: magnets", "float", 0.5, 30, 0.5, "cm", "Distance of the magnet from the head drum."),
+    # ---- outside the circuit: coupling ----
+    FieldSpec("shielding_db", "Shielding", "Interference: coupling", "float", 0, 40, 1, "dB", "How well the case and the cables shield against radio fields."),
+    FieldSpec("approach_s", "Approach time", "Interference: coupling", "float", 0, 60, 0.5, "s", "Seconds, from the start of the video, over which the phone and the magnets close in from four times their distance. 0 = already there."),
 )
 
 

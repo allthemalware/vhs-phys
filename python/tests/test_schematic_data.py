@@ -1,8 +1,9 @@
 # CONTRACT
 """The design data of the schematic: complete, on the canvas, readable, disciplined.
 
-These tests gate the designer's files (`layout.json`, `glyphs.json`); the format is in
-docs/design/FORMAT.md. `test_the_design_is_rich_enough` fails on the plain skeleton on purpose.
+There are two pages, each a pair of files: the circuit (`schematic/`) and the outside world
+(`schematic/outside/`: phone, radio, mains, magnets). Every check runs against both; the format is
+in docs/design/FORMAT.md. `test_the_design_is_rich_enough` fails on a plain skeleton on purpose.
 """
 from __future__ import annotations
 
@@ -16,6 +17,7 @@ import pytest
 from vhsgui.model import AUDIO_MODES, CONDITION_FIELDS, MAX_GENERATIONS, SIGNALS
 
 DATA = Path(__file__).resolve().parents[1] / "vhsgui" / "schematic"
+PAGE_DIRS = {"circuit": DATA, "outside": DATA / "outside"}
 LAYOUT = json.loads((DATA / "layout.json").read_text())
 GLYPHS = json.loads((DATA / "glyphs.json").read_text())["glyphs"]
 
@@ -23,16 +25,28 @@ ROW_H = 18  # a control row: 16 px of text plus its gauge line
 ADVANCE = 0.602  # advance of a monospace character in em (DejaVu Sans Mono 0.602; Hack, JetBrains Mono 0.600)
 MARGIN = 4
 LOOK_IDS = {"preset", "seed", "generations", "signal", "audio"}
-BLOCK_OF = {
-    "source": ["preset", "seed"],
-    "record_deck": ["rec_deck_age_years", "rec_deck_temp_c", "generations"],
-    "cassette": ["tape_age_years", "tape_storage", "tape_quality", "tape_passes", "tape_speed", "tape_stretch", "tape_position_m"],
-    "head_drum": ["head_wear", "head_clog", "drum_wear"],
-    "transport": ["tracking_error_um", "tracking_slope_um", "tension_error"],
-    "power": ["deck_age_years", "deck_temp_c", "deck_humidity", "psu_smps", "mains_hz", "mains_sag"],
-    "output": ["signal", "audio"],
-    "tv": [],
+BLOCKS_OF_PAGE = {
+    "circuit": {
+        "source": ["preset", "seed"],
+        "record_deck": ["rec_deck_age_years", "rec_deck_temp_c", "generations"],
+        "cassette": ["tape_age_years", "tape_storage", "tape_quality", "tape_passes", "tape_speed", "tape_stretch", "tape_position_m"],
+        "head_drum": ["head_wear", "head_clog", "drum_wear"],
+        "transport": ["tracking_error_um", "tracking_slope_um", "tension_error"],
+        "power": ["deck_age_years", "deck_temp_c", "deck_humidity", "psu_smps"],
+        "output": ["signal", "audio"],
+        "tv": [],
+    },
+    "outside": {
+        "phone": ["phone_mode", "phone_distance_cm"],
+        "radio": ["radio_mod", "radio_freq_mhz", "radio_field_vpm"],
+        "mains": ["mains_hz", "mains_sag", "ground_loop_mv", "stray_field_ut", "dimmer_angle_deg"],
+        "crt_magnet": ["crt_magnet", "crt_magnet_z_cm", "crt_magnet_cm", "crt_magnet_angle_deg"],
+        "head_magnet": ["head_magnet", "head_magnet_cm"],
+        "coupling": ["shielding_db", "approach_s"],
+        "tv": [],
+    },
 }
+BLOCK_OF = BLOCKS_OF_PAGE["circuit"]
 PRIMS = {  # kind -> (argument count excluding the optional style, checker)
     "line": 4, "poly": 1, "loop": 1, "rect": 4, "circle": 3, "arc": 5, "dot": 2, "text": 5, "reel": 3, "screen": 4,
 }
@@ -40,6 +54,20 @@ STYLE_KEYS = {"w": {"hair", "thin", "bold"}, "b": {"faint", "dim", "norm", "hot"
 W, H = LAYOUT["canvas"]["w"], LAYOUT["canvas"]["h"]
 BLOCKS = {b["id"]: b for b in LAYOUT["blocks"]}
 CONTROLS = {c["id"]: c for c in LAYOUT["controls"]}
+
+
+@pytest.fixture(autouse=True, params=list(PAGE_DIRS))
+def page(request):
+    """Run every test once per page: the module-level data names are rebound to that page."""
+    global LAYOUT, GLYPHS, W, H, BLOCKS, CONTROLS, BLOCK_OF
+    d = PAGE_DIRS[request.param]
+    LAYOUT = json.loads((d / "layout.json").read_text())
+    GLYPHS = json.loads((d / "glyphs.json").read_text())["glyphs"]
+    W, H = LAYOUT["canvas"]["w"], LAYOUT["canvas"]["h"]
+    BLOCKS = {b["id"]: b for b in LAYOUT["blocks"]}
+    CONTROLS = {c["id"]: c for c in LAYOUT["controls"]}
+    BLOCK_OF = BLOCKS_OF_PAGE[request.param]
+    return request.param
 
 
 def rect_of(o, h=None):
@@ -60,15 +88,28 @@ def hsv(hexcolor):
     return h * 360, s, v, 0.2126 * r + 0.7152 * g + 0.0722 * b
 
 
-def test_the_canvas_and_the_version_are_the_documented_ones():
+def test_the_canvas_and_the_version_are_the_documented_ones(page):
     assert LAYOUT["version"] == 1 and (W, H) == (1180, 620)
-    assert json.loads((DATA / "glyphs.json").read_text())["version"] == 1
+    assert json.loads((PAGE_DIRS[page] / "glyphs.json").read_text())["version"] == 1
 
 
-def test_every_control_is_on_the_schematic_exactly_once():
+def test_every_control_is_on_the_schematic_exactly_once(page):
     ids = [c["id"] for c in LAYOUT["controls"]]
     assert len(ids) == len(set(ids)), "duplicate control ids"
+    expected = {cid for block in BLOCK_OF.values() for cid in block}
+    assert set(ids) == expected
+    assert (set(ids) & LOOK_IDS) == (LOOK_IDS if page == "circuit" else set())
+
+
+def test_the_two_pages_hold_every_control_of_the_window_between_them():
+    ids = [c["id"] for d in PAGE_DIRS.values() for c in json.loads((d / "layout.json").read_text())["controls"]]
+    assert len(ids) == len(set(ids)), "a control is on both pages"
     assert set(ids) == {f.key for f in CONDITION_FIELDS} | LOOK_IDS
+
+
+def test_the_two_pages_share_one_theme_one_font_and_one_set_of_animation_numbers():
+    a, b = (json.loads((d / "layout.json").read_text()) for d in PAGE_DIRS.values())
+    assert a["theme"] == b["theme"] and a["animation"] == b["animation"] and a["canvas"] == b["canvas"] and a["hint"]["size"] == b["hint"]["size"]
 
 
 def test_every_control_lives_in_the_block_of_its_part_of_the_machine():
@@ -77,7 +118,7 @@ def test_every_control_lives_in_the_block_of_its_part_of_the_machine():
         assert sorted(c["id"] for c in LAYOUT["controls"] if c["block"] == block) == sorted(ids), block
 
 
-def test_the_controls_describe_the_same_ranges_as_the_window():
+def test_the_controls_describe_the_same_ranges_as_the_window(page):
     spec = {f.key: f for f in CONDITION_FIELDS}
     for cid, c in CONTROLS.items():
         assert c["label"] and c["label"] == c["label"].upper() and len(c["label"]) <= 26, cid
@@ -90,6 +131,8 @@ def test_the_controls_describe_the_same_ranges_as_the_window():
                 assert c["kind"] == "toggle", cid
             else:
                 assert c["kind"] == "choice" and c["choices"] == list(f.choices), cid
+    if page != "circuit":
+        return
     assert CONTROLS["generations"]["kind"] == "stepper" and (CONTROLS["generations"]["min"], CONTROLS["generations"]["max"]) == (1, MAX_GENERATIONS)
     assert CONTROLS["seed"]["kind"] == "stepper" and CONTROLS["seed"]["min"] == 0 and CONTROLS["seed"]["max"] >= 1_000_000
     assert CONTROLS["signal"]["kind"] == "choice" and CONTROLS["signal"]["choices"] == list(SIGNALS)
@@ -198,9 +241,11 @@ def _near_a_block(pt, tol=8):
     return False
 
 
-def test_wires_are_schematic_lines_that_join_blocks():
+def test_wires_are_schematic_lines_that_join_blocks(page):
     kinds = {w["kind"] for w in LAYOUT["wires"]}
-    assert {"video", "audio", "dub"} <= kinds <= {"video", "audio", "dub", "power"}
+    assert kinds <= {"video", "audio", "dub", "power"}
+    if page == "circuit":
+        assert {"video", "audio", "dub"} <= kinds
     for w in LAYOUT["wires"]:
         pts = w["points"]
         assert len(pts) >= 2, w["id"]
@@ -210,10 +255,12 @@ def test_wires_are_schematic_lines_that_join_blocks():
         assert _near_a_block(pts[0]) and _near_a_block(pts[-1]), f"{w['id']} ends in empty space"
 
 
-def test_the_signal_flow_reads_from_left_to_right():
+def test_the_signal_flow_reads_from_left_to_right(page):
     cx = {k: b["x"] + b["w"] / 2 for k, b in BLOCKS.items()}
-    assert cx["source"] < cx["cassette"] and cx["record_deck"] < cx["cassette"] < cx["head_drum"] <= cx["power"] < cx["tv"]
-    assert cx["output"] < cx["tv"] and all(cx[k] < cx["tv"] for k in cx if k != "tv")
+    if page == "circuit":
+        assert cx["source"] < cx["cassette"] and cx["record_deck"] < cx["cassette"] < cx["head_drum"] <= cx["power"] < cx["tv"]
+        assert cx["output"] < cx["tv"]
+    assert all(cx[k] < cx["tv"] for k in cx if k != "tv"), "the TV is the right-most block, where the picture arrives"
 
 
 def _segment_points(a, b, step=2.0):
@@ -360,18 +407,21 @@ def test_the_animation_is_calm():
     assert 0 <= a["flicker"] <= 0.08 and 600 <= a["boot_ms"] <= 4000 and 100 <= a["refresh_flash_ms"] <= 800
 
 
-def test_the_design_is_rich_enough():
-    """Every part of the machine is drawn, not just labelled (red on the plain skeleton)."""
+def test_the_design_is_rich_enough(page):
+    """Every part is drawn, not just labelled (red on a plain skeleton)."""
+    outside = page == "outside"
     drawn = {i["block"] for i in LAYOUT["instances"]}
     assert set(BLOCK_OF) <= drawn, f"blocks without a drawing: {sorted(set(BLOCK_OF) - drawn)}"
-    assert len({i["glyph"] for i in LAYOUT["instances"]}) >= 8, "the vocabulary of symbols is too small"
-    assert len(LAYOUT["instances"]) >= 12
-    assert sum(len(g["prims"]) for g in GLYPHS.values()) >= 120, "the drawings are too thin"
-    assert any(p[0] == "reel" for g in GLYPHS.values() for p in g["prims"]), "the cassette needs its reels"
+    assert len({i["glyph"] for i in LAYOUT["instances"]}) >= (6 if outside else 8), "the vocabulary of symbols is too small"
+    assert len(LAYOUT["instances"]) >= (8 if outside else 12)
+    assert sum(len(g["prims"]) for g in GLYPHS.values()) >= (90 if outside else 120), "the drawings are too thin"
+    if not outside:
+        assert any(p[0] == "reel" for g in GLYPHS.values() for p in g["prims"]), "the cassette needs its reels"
     texts = [p for g in GLYPHS.values() for p in g["prims"] if p[0] == "text"] + LAYOUT.get("labels", [])
-    assert len(texts) >= 8, "callouts and legends are part of the look"
-    assert all(b["caption"] for b in LAYOUT["blocks"] if b["id"] != "tv"), "every block carries a one-line caption of what it does to the picture"
-    assert len([w for w in LAYOUT["wires"] if w["label"]]) >= 3, "label the signal paths"
+    assert len(texts) >= (6 if outside else 8), "callouts and legends are part of the look"
+    assert all(b["caption"] for b in LAYOUT["blocks"] if b["id"] != "tv"), "every block carries a one-line caption of what it does"
+    if not outside:
+        assert len([w for w in LAYOUT["wires"] if w["label"]]) >= 3, "label the signal paths"
     tv = next(i for i in LAYOUT["instances"] if i["block"] == "tv" and any(p[0] == "screen" for p in GLYPHS[i["glyph"]]["prims"]))
     screen = next(p for p in GLYPHS[tv["glyph"]]["prims"] if p[0] == "screen")
     w, h = screen[3] * tv["scale"], screen[4] * tv["scale"]

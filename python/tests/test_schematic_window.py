@@ -7,10 +7,15 @@ every change made on it goes through them. The surface fixed here:
 
     MainWindow.schematic_mode            True while the schematic is shown (read only)
     MainWindow.set_schematic_mode(on)    what the two buttons call
-    MainWindow.schematic                 the SchematicView, also found by the object name "schematicView"
+    MainWindow.schematic                 the SchematicView of the circuit, also found by the object name "schematicView"
+    MainWindow.outside                   the SchematicView of the outside world (phone, radio, mains, magnets),
+                                         object name "outsideView"; both mirror the same editors, both show the picture on their TV
+    MainWindow.schematic_page            "circuit" or "outside": which of the two is shown in schematic mode
+    MainWindow.set_schematic_page(name)  what the two page buttons call
     "panelsButton", "schematicButton"    checkable, exclusive, visible in both modes
+    "circuitButton", "outsideButton"     checkable, exclusive, visible in schematic mode only
     python -m vhsgui --schematic         starts in schematic mode; with --screenshot the picture shows the
-                                         settled drawing (no half-drawn boot)
+                                         settled drawing (no half-drawn boot); `--page outside` shows the other page
 
 In schematic mode the editors and the preview picture are hidden (the TV shows the picture) and the rest
 of the window stays reachable below the schematic. The window starts in panels mode.
@@ -159,14 +164,37 @@ def shown_look(window):
     return {**look.condition, "preset": look.preset, "seed": look.seed, "generations": look.generations, "signal": look.signal, "audio": look.audio}
 
 
+def views(window):
+    return [window.schematic, window.outside]
+
+
+def view_of(window, cid):
+    for v in views(window):
+        if cid in v.control_ids():
+            return v
+    raise AssertionError(f"no page has a line for {cid}")
+
+
+def show_page_of(app, window, cid):
+    """Go to the page that holds `cid` and return its view."""
+    v = view_of(window, cid)
+    window.set_schematic_page("outside" if v is window.outside else "circuit")
+    app.processEvents()
+    return v
+
+
 def assert_mirrors(window):
     want = shown_look(window)
-    for cid in window.schematic.control_ids():
-        got = window.schematic.value(cid)
-        if isinstance(want[cid], float):
-            assert got == pytest.approx(want[cid], abs=1e-6), cid
-        else:
-            assert got == want[cid], cid
+    seen = set()
+    for view in views(window):
+        for cid in view.control_ids():
+            seen.add(cid)
+            got = view.value(cid)
+            if isinstance(want[cid], float):
+                assert got == pytest.approx(want[cid], abs=1e-6), cid
+            else:
+                assert got == want[cid], cid
+    assert seen == set(want), "every setting of the window has a line on one of the pages"
 
 
 # ---------------------------------------------------------------- the two views
@@ -177,8 +205,13 @@ def test_the_window_starts_with_the_panels(app, window):
     panels, schematic = child(window, QAbstractButton, "panelsButton"), child(window, QAbstractButton, "schematicButton")
     assert panels.isCheckable() and schematic.isCheckable() and panels.isChecked() and not schematic.isChecked()
     view = child(window, SchematicView, "schematicView")
-    assert window.schematic is view and not view.isVisibleTo(window) and not view.is_ticking()
+    outside = child(window, SchematicView, "outsideView")
+    assert window.schematic is view and window.outside is outside
+    assert not view.isVisibleTo(window) and not view.is_ticking() and not outside.isVisibleTo(window) and not outside.is_ticking()
     assert child(window, QDoubleSpinBox, "field_head_wear").isVisibleTo(window)
+    assert child(window, QDoubleSpinBox, "field_ground_loop_mv").isVisibleTo(window), "the interference settings have their panels too"
+    assert not child(window, QAbstractButton, "circuitButton").isVisibleTo(window) and not child(window, QAbstractButton, "outsideButton").isVisibleTo(window)
+    assert window.schematic_page == "circuit"
     assert child(window, QWidget, "previewView").isVisibleTo(window)
 
 
@@ -237,7 +270,8 @@ def test_the_schematic_only_draws_while_it_is_shown_and_boots_once(app, window):
 
 
 def test_the_schematic_starts_as_the_window_does(app, window):
-    assert set(window.schematic.control_ids()) == {f.key for f in CONDITION_FIELDS} | {"preset", "seed", "generations", "signal", "audio"}
+    assert set(window.schematic.control_ids()) | set(window.outside.control_ids()) == {f.key for f in CONDITION_FIELDS} | {"preset", "seed", "generations", "signal", "audio"}
+    assert not set(window.schematic.control_ids()) & set(window.outside.control_ids())
     combo = child(window, QComboBox, "presetCombo")
     assert window.schematic.choices("preset") == [combo.itemText(i) for i in range(combo.count())], "the presets are the ones the program has"
     assert_mirrors(window)
@@ -270,7 +304,7 @@ def test_a_preset_puts_all_of_its_values_on_the_schematic(app, window):
         preset.setCurrentIndex(preset.findText(name))
         assert window.schematic.value("preset") == name
         assert_mirrors(window)
-        assert not any(window.schematic.is_edited(c) for c in window.schematic.control_ids())
+        assert not any(v.is_edited(c) for v in views(window) for c in v.control_ids())
 
 
 def test_the_schematic_drives_the_editors(app, window):
@@ -304,7 +338,12 @@ def test_the_schematic_drives_the_editors(app, window):
 
 def test_edits_are_marked_against_the_preset_and_the_defaults(app, window):
     view = window.schematic
-    assert not any(view.is_edited(c) for c in view.control_ids())
+    assert not any(v.is_edited(c) for v in views(window) for c in v.control_ids())
+    ground = child(window, QDoubleSpinBox, "field_ground_loop_mv")
+    ground.setValue(ground.value() + 100.0)
+    assert window.outside.is_edited("ground_loop_mv") and not window.outside.is_edited("mains_sag")
+    child(window, QPushButton, "resetButton").click()
+    assert not window.outside.is_edited("ground_loop_mv") and window.outside.value("ground_loop_mv") == pytest.approx(ground.value(), abs=1e-6)
     wear = child(window, QDoubleSpinBox, "field_head_wear")
     original = wear.value()
     wear.setValue(original + 0.2 if original <= 0.8 else original - 0.2)
@@ -329,7 +368,7 @@ def test_edits_are_marked_against_the_preset_and_the_defaults(app, window):
     wear.setValue(ruined - 0.1 if ruined >= 0.1 else ruined + 0.1)
     assert view.is_edited("head_wear"), "edits are measured against the preset that is chosen now"
     preset.setCurrentIndex(preset.findText("pristine"))
-    assert not any(view.is_edited(c) for c in view.control_ids())
+    assert not any(v.is_edited(c) for v in views(window) for c in v.control_ids())
     assert not view.is_edited("preset")
 
 
@@ -380,11 +419,72 @@ def test_every_line_has_a_help_text_from_the_window(app, window):
     app.processEvents()
     default = view.hint_text()
     for spec in CONDITION_FIELDS:
-        hover(view, view.control_rect(spec.key).center())
-        assert view.hint_text() == spec.help, spec.key
+        v = show_page_of(app, window, spec.key)
+        hover(v, v.control_rect(spec.key).center())
+        assert v.hint_text() == spec.help, spec.key
     for cid in ("preset", "seed", "generations", "signal", "audio"):
         hover(view, view.control_rect(cid).center())
         assert view.hint_text() not in ("", default), cid
+
+
+def test_the_two_pages_switch_and_each_starts_up_once(app, window):
+    circuit_btn, outside_btn = child(window, QAbstractButton, "circuitButton"), child(window, QAbstractButton, "outsideButton")
+    assert circuit_btn.isCheckable() and outside_btn.isCheckable() and circuit_btn.isChecked() and not outside_btn.isChecked()
+    window.set_schematic_mode(True)
+    app.processEvents()
+    assert circuit_btn.isVisibleTo(window) and outside_btn.isVisibleTo(window)
+    assert window.schematic.isVisibleTo(window) and not window.outside.isVisibleTo(window) and window.schematic_page == "circuit"
+    assert window.schematic.is_ticking() and not window.outside.is_ticking()
+    window.schematic.skip_boot()
+    outside_btn.click()
+    app.processEvents()
+    assert window.schematic_page == "outside" and outside_btn.isChecked() and not circuit_btn.isChecked()
+    assert window.outside.isVisibleTo(window) and not window.schematic.isVisibleTo(window)
+    assert window.outside.is_ticking() and not window.schematic.is_ticking()
+    assert window.outside.boot_progress() < 1.0, "the second page plays its own start-up the first time"
+    window.outside.skip_boot()
+    circuit_btn.click()
+    outside_btn.click()
+    app.processEvents()
+    assert window.outside.boot_progress() == 1.0 and window.schematic.boot_progress() == 1.0
+    window.set_schematic_page("circuit")
+    assert window.schematic_page == "circuit" and circuit_btn.isChecked()
+    window.set_schematic_mode(False)
+    assert not circuit_btn.isVisibleTo(window) and not outside_btn.isVisibleTo(window)
+    assert not window.schematic.is_ticking() and not window.outside.is_ticking()
+
+
+def test_the_outside_page_changes_the_same_editors(app, window):
+    window.set_schematic_mode(True)
+    window.set_schematic_page("outside")
+    window.resize(1280, 900)
+    app.processEvents()
+    view = window.outside
+    spec = next(f for f in CONDITION_FIELDS if f.key == "ground_loop_mv")
+    spin = child(window, QDoubleSpinBox, "field_ground_loop_mv")
+    r = view.control_rect("ground_loop_mv")
+    mouse(view, QEvent.Type.MouseButtonPress, QPointF(r.right() - 1, r.top() + 6))
+    mouse(view, QEvent.Type.MouseButtonRelease, QPointF(r.right() - 1, r.top() + 6))
+    assert spin.value() >= spec.hi - 2 * spec.step and view.value("ground_loop_mv") == pytest.approx(spin.value(), abs=1e-6)
+    assert window.preview_stale is True
+    click(view, at(view, "phone_mode"))
+    assert child(window, QComboBox, "field_phone_mode").currentData() == "gsm"
+    click(view, at(view, "crt_magnet"))
+    assert child(window, QComboBox, "field_crt_magnet").currentData() == "fridge"
+    double_click(view, at(view, "ground_loop_mv", 0.5))
+    assert spin.value() == pytest.approx(0.0, abs=1e-6), "double click returns to the preset's value"
+    assert window.look().condition["phone_mode"] == "gsm" and window.look().condition["crt_magnet"] == "fridge"
+    assert_mirrors(window)
+
+
+def test_an_interference_preset_shows_on_the_outside_page_and_is_not_an_edit(app, window):
+    preset = child(window, QComboBox, "presetCombo")
+    preset.setCurrentIndex(preset.findText("ground-loop"))
+    assert window.outside.value("ground_loop_mv") > 100.0 and abs(window.outside.value("mains_hz") - 60.0) > 0.1
+    assert not any(window.outside.is_edited(c) for c in window.outside.control_ids())
+    preset.setCurrentIndex(preset.findText("magnet-head"))
+    assert window.outside.value("head_magnet") == "neodymium" and window.outside.value("ground_loop_mv") == 0.0
+    assert_mirrors(window)
 
 
 # ---------------------------------------------------------------- the TV and the work flow
@@ -396,6 +496,7 @@ def test_the_tv_shows_what_the_preview_shows(app, window, clip):
     preview = child(window, QWidget, "previewView")
     wait_for(app, lambda: preview.image() is not None)
     assert view.screen_image() is not None and view.screen_image() == preview.image()
+    assert window.outside.screen_image() == preview.image(), "the other page has a TV too"
     first = view.screen_image().copy()
     child(window, QDoubleSpinBox, "lengthSpin").setValue(0.0)
     child(window, QPushButton, "previewButton").click()
@@ -403,7 +504,7 @@ def test_the_tv_shows_what_the_preview_shows(app, window, clip):
     child(window, QAbstractButton, "processedButton").click()
     assert view.screen_image() == preview.image() and view.screen_image() != first
     child(window, QAbstractButton, "splitButton").click()
-    assert view.screen_image() == preview.image()
+    assert view.screen_image() == preview.image() and window.outside.screen_image() == preview.image()
     child(window, QAbstractButton, "originalButton").click()
     assert view.screen_image() == preview.image()
 
@@ -445,3 +546,16 @@ def test_the_module_can_start_in_schematic_mode_and_save_a_picture_of_it(binary,
     p = QImage(str(plain)).convertToFormat(QImage.Format.Format_RGB32)
     praw = np.frombuffer(p.constBits(), np.uint8).reshape(p.height(), p.bytesPerLine() // 4, 4)[:, : p.width()].astype(float)
     assert ((praw[..., 1] > 120) & (praw[..., 1] > 1.6 * praw[..., 2]) & (praw[..., 1] > 1.3 * praw[..., 0])).mean() < phosphor.mean() / 3, "the default is still the panels"
+
+
+def test_the_module_can_start_on_the_outside_page(binary, tmp_path):
+    png = tmp_path / "outside.png"
+    result = _run_module("--schematic", "--page", "outside", "--screenshot", str(png))
+    assert result.returncode == 0, result.stderr
+    image = QImage(str(png)).convertToFormat(QImage.Format.Format_RGB32)
+    assert image.width() >= 1000 and image.height() >= 700
+    raw = np.frombuffer(image.constBits(), np.uint8).reshape(image.height(), image.bytesPerLine() // 4, 4)[:, : image.width()].astype(float)
+    r, g, b = raw[..., 2], raw[..., 1], raw[..., 0]
+    assert ((g > 120) & (g > 1.6 * r) & (g > 1.3 * b)).mean() > 0.01
+    assert _run_module("--page", "outside", "--screenshot", str(tmp_path / "x.png")).returncode != 0, "a page without --schematic makes no sense"
+
