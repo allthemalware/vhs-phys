@@ -9,12 +9,18 @@
 //! are meant to be tuned against real tapes and decks.
 
 use crate::format::TapeSpeed;
-use crate::interference_params::{MagnetKind, PhoneMode, RadioMod};
+use crate::interference::hash_unit;
+use crate::interference_params::{CrtMagnet, CrtParams, HeadMagnet, InterferenceParams, MagnetKind, MainsParams, PhoneMode, PhoneParams, RadioMod, RadioParams};
 use crate::pipeline::Params;
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
 
 const STREAM_COND: u64 = 51;
+/// Hash stream of the mains phase, kept apart from the wear draws so adding it moves none of them.
+const STREAM_MAINS_PHASE: u64 = 52;
+
+const CM_PER_M: f64 = 100.0;
+const HZ_PER_MHZ: f64 = 1.0e6;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -201,13 +207,21 @@ pub fn supply(c_ratio: f64, esr_mult: f64, mains_hz: f64, sag: f64, smps: bool) 
 
 impl Condition {
     pub fn preset_names() -> &'static [&'static str] {
-        &["pristine", "good", "worn", "bad", "ruined", "dry-caps", "dirty-heads", "mistracked", "stretched", "humid-attic"]
+        &[
+            "pristine", "good", "worn", "bad", "ruined", "dry-caps", "dirty-heads", "mistracked", "stretched", "humid-attic",
+            "phone-buzz", "ham-radio", "am-station", "ground-loop", "magnet-screen", "magnet-head", "dimmer",
+        ]
+    }
+
+    /// New premium tape, played three times, on a healthy deck in a quiet room.
+    fn pristine() -> Self {
+        Self { tape_quality: 1.0, tape_passes: 3.0, ..Self::default() }
     }
 
     pub fn preset(name: &str) -> Option<Self> {
         let d = Self::default();
         Some(match name {
-            "pristine" => Self { tape_quality: 1.0, tape_passes: 3.0, ..d },
+            "pristine" => Self::pristine(),
             "good" => Self { tape_age_years: 8.0, tape_quality: 0.7, tape_passes: 4.0, deck_age_years: 10.0, head_wear: 0.15, rec_deck_age_years: 8.0, ..d },
             "worn" => Self {
                 tape_age_years: 25.0, tape_storage: 0.5, tape_quality: 0.5, tape_passes: 6.0, tape_stretch: 0.2, head_wear: 0.4, head_clog: 0.15,
@@ -229,14 +243,63 @@ impl Condition {
             "mistracked" => Self { tracking_error_um: 20.0, tracking_slope_um: 55.0, ..d },
             "stretched" => Self { tape_stretch: 0.8, tension_error: -0.5, ..d },
             "humid-attic" => Self { tape_age_years: 30.0, tape_storage: 1.0, deck_humidity: 0.9, ..d },
+            // one outside mechanism each, on the otherwise pristine machine
+            "phone-buzz" => Self { phone_mode: PhoneMode::Gsm, phone_distance_cm: 20.0, ..Self::pristine() },
+            "ham-radio" => Self { radio_mod: RadioMod::Ssb, radio_freq_mhz: 3.9, radio_field_vpm: 6.0, ..Self::pristine() },
+            "am-station" => Self { radio_mod: RadioMod::Am, radio_freq_mhz: 0.9, radio_field_vpm: 6.0, ..Self::pristine() },
+            // the mains of this room is off nominal, as a loaded line is
+            "ground-loop" => Self { ground_loop_mv: 300.0, mains_hz: 59.4, ..Self::pristine() },
+            "magnet-screen" => Self {
+                crt_magnet: MagnetKind::Neodymium, crt_magnet_z_cm: 33.0, crt_magnet_cm: 12.0, crt_magnet_angle_deg: 20.0, ..Self::pristine()
+            },
+            "magnet-head" => Self { head_magnet: MagnetKind::Neodymium, head_magnet_cm: 4.5, ..Self::pristine() },
+            "dimmer" => Self { dimmer_angle_deg: 100.0, ..Self::pristine() },
             _ => return None,
         })
+    }
+
+    /// The outside world in physical units: centimetres become metres, megahertz hertz.
+    fn interference(&self, seed: u64) -> InterferenceParams {
+        let default = InterferenceParams::default();
+        InterferenceParams {
+            seed,
+            shielding_db: self.shielding_db,
+            approach_s: self.approach_s,
+            phone: PhoneParams { mode: self.phone_mode, distance_m: self.phone_distance_cm / CM_PER_M, ..default.phone },
+            radio: RadioParams {
+                modulation: self.radio_mod,
+                freq_hz: self.radio_freq_mhz * HZ_PER_MHZ,
+                field_vpm: self.radio_field_vpm,
+                ..default.radio
+            },
+            mains: MainsParams {
+                freq_hz: self.mains_hz,
+                // the mains is not locked to anything in the equipment, so its phase at the start of the clip is arbitrary
+                phase: 2.0 * std::f64::consts::PI * hash_unit(seed, STREAM_MAINS_PHASE, 0),
+                ground_loop_mv: self.ground_loop_mv,
+                stray_field_ut: self.stray_field_ut,
+                dimmer_angle_deg: self.dimmer_angle_deg,
+                ..default.mains
+            },
+            crt: CrtParams {
+                magnet: CrtMagnet {
+                    kind: self.crt_magnet,
+                    z_m: self.crt_magnet_z_cm / CM_PER_M,
+                    rho_m: self.crt_magnet_cm / CM_PER_M,
+                    angle_deg: self.crt_magnet_angle_deg,
+                },
+                ..default.crt
+            },
+            head_magnet: HeadMagnet { kind: self.head_magnet, distance_m: self.head_magnet_cm / CM_PER_M, ..default.head_magnet },
+            ..default
+        }
     }
 
     /// Build the full physical parameter set.
     pub fn to_params(&self, seed: u64) -> Params {
         let mut p = Params { seed, ..Params::default() };
         p.speed = self.tape_speed;
+        p.interference = self.interference(seed);
         let mut rng = Rng::new(seed, STREAM_COND, 0);
         let mut g = move || rng.gauss() as f64;
 

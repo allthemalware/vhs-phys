@@ -32,7 +32,11 @@ pub fn apply_overrides(p: &Params, text: &str) -> Result<Params, String> {
     // TOML integers are signed 64-bit, so a seed above i64::MAX (derived seeds often are)
     // cannot make the round trip: keep it aside unless the text sets a new one.
     let keep_seed = (!over.contains_key("seed")).then_some(p.seed);
-    let mut base = toml::Value::try_from(Params { seed: 0, ..p.clone() }).map_err(|e| e.to_string())?;
+    // the outside world's copy of the seed follows `seed`, so it is set aside the same way
+    let mut aside = p.clone();
+    aside.seed = 0;
+    aside.interference.seed = 0;
+    let mut base = toml::Value::try_from(aside).map_err(|e| e.to_string())?;
     // head / head0 / head1 shorthands -> heads[0], heads[1]
     let mut heads: [toml::Table; 2] = [toml::Table::new(), toml::Table::new()];
     if let Some(toml::Value::Table(t)) = over.remove("head") {
@@ -62,6 +66,7 @@ pub fn apply_overrides(p: &Params, text: &str) -> Result<Params, String> {
     if let Some(s) = keep_seed {
         out.seed = s;
     }
+    out.interference.seed = out.seed;
     Ok(out)
 }
 
