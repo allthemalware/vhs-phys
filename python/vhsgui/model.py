@@ -59,7 +59,7 @@ CONDITION_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("tape_age_years", "Tape age", "Tape", "float", 0, 50, 0.5, "years", "Years since the recording was made."),
     FieldSpec("tape_storage", "Storage", "Tape", "float", 0, 1, 0.01, "", "0 = cool dry shelf, 1 = hot humid attic."),
     FieldSpec("tape_quality", "Tape quality", "Tape", "float", 0, 1, 0.01, "", "0 = cheap tape, 1 = premium (smoother, better calendered coating)."),
-    FieldSpec("tape_passes", "Earlier plays", "Tape", "float", 0, 200, 1, "plays", "How often the tape has been played already; loose debris wears off."),
+    FieldSpec("tape_passes", "Earlier plays", "Tape", "float", 0, 200, 1, "", "How often the tape has been played already; loose debris wears off."),
     FieldSpec("tape_stretch", "Stretch and edge damage", "Tape", "float", 0, 1, 0.01, "", "0 = fine, 1 = stretched, creased and edge damaged."),
     FieldSpec("tape_position_m", "Position on tape", "Tape", "float", 0, 400, 1, "m", "Where the clip sits on the tape. Other positions give other defects."),
     # ---- heads and drum ----
