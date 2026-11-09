@@ -34,11 +34,17 @@ vhsphys run in.mkv out.mp4 --preset good --seed 12 --start 30 -t 10 --size 1280x
 vhsphys run in.mp4 still.png --preset bad --frames 40
 
 # inspect / edit every parameter of a preset
+vhsphys show worn --condition           # only the high-level knobs
 vhsphys show worn > my_tape.toml        # edit, then:
 vhsphys run in.mp4 out.mp4 --preset worn --config my_tape.toml
 ```
 
 * The same `--seed` gives the same tape (same defects, same timebase wobble).
+* `--start SECONDS` places the clip on the absolute timeline. The tape, its
+  defects and the timebase error are functions of the absolute frame index, so
+  an excerpt rendered with `--start` shows the same picture as the same frames
+  of a render of the whole file. (Only the first frame of an excerpt differs a
+  little, because it lacks the neighbouring frames the model looks at.)
 * The picture is processed as NTSC (29.97 fps, 754x480 active picture). ffmpeg
   scales to that and back, so any input size/rate works. Audio is copied
   untouched.
