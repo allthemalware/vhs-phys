@@ -117,12 +117,16 @@ fn the_interference_presets_each_isolate_one_mechanism() {
     assert!(only(&get("magnet-screen"), [false, false, false, false, false, true, false]));
     assert!(only(&get("magnet-head"), [false, false, false, false, false, false, true]));
     assert!(only(&get("dimmer"), [false, false, false, false, true, false, false]));
-    // and none of them touches the wear of the machine: the deck is the one of the 'pristine' preset
+    // and none of them touches the wear of the machine: the deck is the one of the 'pristine' preset. The deck's own
+    // supply ripple does follow the mains frequency (it falls as 1 / f), so a mains off 60 Hz moves it by about a percent.
     let wear = |n: &str| {
         let p = Condition::preset(n).unwrap().to_params(1);
-        (p.tape.defects_per_mm2, p.deck.supply.hum_ire, p.heads[0].gain)
+        (p.tape.defects_per_mm2, p.heads[0].gain, p.deck.supply.hum_ire)
     };
+    let clean = wear("pristine");
     for name in NEW_PRESETS {
-        assert_eq!(wear(name), wear("pristine"), "{name}");
+        let w = wear(name);
+        assert_eq!((w.0, w.1), (clean.0, clean.1), "{name}");
+        assert!((w.2 / clean.2 - 1.0).abs() < 0.03, "{name}: supply hum {} against {}", w.2, clean.2);
     }
 }
