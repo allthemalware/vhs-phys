@@ -9,6 +9,7 @@
 //! are meant to be tuned against real tapes and decks.
 
 use crate::format::TapeSpeed;
+use crate::interference_params::{MagnetKind, PhoneMode, RadioMod};
 use crate::pipeline::Params;
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
@@ -60,6 +61,35 @@ pub struct Condition {
     // ---- recording deck (the one that made the tape) ----
     pub rec_deck_age_years: f64,
     pub rec_deck_temp_c: f64,
+    // ---- outside the circuit (all off by default; see `interference.rs`) ----
+    /// A mobile phone transmitting near the equipment.
+    pub phone_mode: PhoneMode,
+    /// Distance of the phone, cm.
+    pub phone_distance_cm: f64,
+    /// A radio transmitter whose field reaches the equipment.
+    pub radio_mod: RadioMod,
+    /// Its carrier frequency, MHz (0.5 .. 19).
+    pub radio_freq_mhz: f64,
+    /// Its field strength at the equipment, V/m.
+    pub radio_field_vpm: f64,
+    /// Voltage between the grounds of the deck and the TV, mV rms at the mains frequency.
+    pub ground_loop_mv: f64,
+    /// Stray 50/60 Hz magnetic field at the audio head and the picture tube, uT rms.
+    pub stray_field_ut: f64,
+    /// Phase-cut dimmer on the same circuit: firing angle in degrees after each zero crossing (0 = none).
+    pub dimmer_angle_deg: f64,
+    /// A magnet near the picture tube, its place along the tube from the gun (cm), its distance from the axis (cm) and the angle around it.
+    pub crt_magnet: MagnetKind,
+    pub crt_magnet_z_cm: f64,
+    pub crt_magnet_cm: f64,
+    pub crt_magnet_angle_deg: f64,
+    /// A magnet near the head drum and its distance (cm).
+    pub head_magnet: MagnetKind,
+    pub head_magnet_cm: f64,
+    /// Shielding of the case and cables against radio fields, dB.
+    pub shielding_db: f64,
+    /// Seconds over which the phone and the magnets close in from four times their distance.
+    pub approach_s: f64,
 }
 
 impl Default for Condition {
@@ -86,6 +116,22 @@ impl Default for Condition {
             tension_error: 0.0,
             rec_deck_age_years: 2.0,
             rec_deck_temp_c: 55.0,
+            phone_mode: PhoneMode::Off,
+            phone_distance_cm: 30.0,
+            radio_mod: RadioMod::Off,
+            radio_freq_mhz: 3.9,
+            radio_field_vpm: 2.0,
+            ground_loop_mv: 0.0,
+            stray_field_ut: 0.0,
+            dimmer_angle_deg: 0.0,
+            crt_magnet: MagnetKind::Absent,
+            crt_magnet_z_cm: 35.0,
+            crt_magnet_cm: 15.0,
+            crt_magnet_angle_deg: 0.0,
+            head_magnet: MagnetKind::Absent,
+            head_magnet_cm: 5.0,
+            shielding_db: 10.0,
+            approach_s: 0.0,
         }
     }
 }

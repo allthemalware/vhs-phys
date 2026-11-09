@@ -17,6 +17,7 @@ use crate::decode::{decode_frame, demod_chroma, DecodeParams, StreamView};
 use crate::electronics::{process_segment, DeckParams};
 use crate::format::TapeSpeed;
 use crate::head::*;
+use crate::interference_params::InterferenceParams;
 use crate::mech::{Mech, MechParams};
 use crate::record::*;
 use crate::rng::Rng;
@@ -54,6 +55,8 @@ pub struct Params {
     pub composite: CompositeParams,
     /// The audio path of the same deck and tape.
     pub audio: AudioParams,
+    /// Fields and signals from outside the circuit (off by default).
+    pub interference: InterferenceParams,
 }
 
 impl Default for Params {
@@ -70,6 +73,7 @@ impl Default for Params {
             speed: TapeSpeed::default(),
             composite: CompositeParams::default(),
             audio: AudioParams::default(),
+            interference: InterferenceParams::default(),
         }
     }
 }
