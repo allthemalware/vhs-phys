@@ -1,7 +1,9 @@
 //! `vhsphys`: run a video through the VHS physical model.
 //!
 //! ffmpeg does the container/codec work and the scaling to and from the 754x480
-//! active picture; this tool does the physics.
+//! active picture; this tool does the physics, for the picture and the sound.
+
+mod audio_io;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
@@ -41,6 +43,17 @@ enum Cmd {
     },
 }
 
+/// What happens to the input's sound.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum AudioMode {
+    /// Play it through the same tape and deck as the picture.
+    Process,
+    /// Keep the original sound.
+    Copy,
+    /// No sound in the output.
+    None,
+}
+
 #[derive(clap::Args)]
 struct RunArgs {
     input: PathBuf,
@@ -60,6 +73,9 @@ struct RunArgs {
     /// Generations: 1 is a recording of the source, 2 a copy of that tape, and so on.
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=8))]
     generations: u8,
+    /// Sound: process (through the simulated tape and deck), copy (untouched) or none.
+    #[arg(long, value_enum, default_value_t = AudioMode::Process)]
+    audio: AudioMode,
     /// Start time in seconds.
     #[arg(long)]
     start: Option<f64>,
@@ -150,6 +166,35 @@ fn run(a: RunArgs) -> Result<()> {
         None => (iw, ih),
     };
     let fps = "30000/1001";
+    let is_image = matches!(a.output.extension().and_then(|e| e.to_str()), Some("png" | "jpg" | "jpeg" | "bmp" | "tif" | "tiff"));
+    // The tape, its defects and the timebase error are functions of the absolute frame index,
+    // so rendering from `--start` gives the same picture as rendering the whole file.
+    let start_frame = a.start.map_or(0, |s| (s * 30000.0 / 1001.0).round() as i64);
+
+    // ---- sound ----
+    // Processed before the picture, into a temporary file the encoder reads as its sound.
+    // It starts at the first video frame, so it is in sync and the same stretch of tape
+    // sounds the same whatever `--start` is.
+    // Stills have no sound, and a clip without sound gets none whatever the mode.
+    let input_sound = if is_image || a.audio == AudioMode::None { None } else { audio_io::probe(&a.ffprobe, &a.input)? };
+    let audio = if input_sound.is_some() { a.audio } else { AudioMode::None };
+    let sound = match input_sound {
+        Some((channels, _)) if audio == AudioMode::Process => {
+            let channels = channels.min(2);
+            let t0 = start_frame as f64 * 1001.0 / 30000.0;
+            // no need to process sound past the last frame the picture will have
+            let frames_s = a.frames.map(|n| n as f64 * 1001.0 / 30000.0);
+            let duration = match (a.duration, frames_s) {
+                (Some(d), Some(f)) => Some(d.min(f)),
+                (d, f) => d.or(f),
+            };
+            let stages_sound = if a.bypass { &[][..] } else { &stages[..] };
+            let wav = audio_io::render(&a.ffmpeg, &a.input, t0, duration, channels, stages_sound)?;
+            eprintln!("sound: {channels} ch, {} Hz, processed", audio_io::RATE);
+            Some(wav)
+        }
+        _ => None,
+    };
 
     // ---- decoder ----
     let mut dec = Command::new(&a.ffmpeg);
@@ -166,18 +211,24 @@ fn run(a: RunArgs) -> Result<()> {
     let mut dec_out = dec.stdout.take().unwrap();
 
     // ---- encoder ----
-    let is_image = matches!(a.output.extension().and_then(|e| e.to_str()), Some("png" | "jpg" | "jpeg" | "bmp" | "tif" | "tiff"));
     let mut enc = Command::new(&a.ffmpeg);
     enc.args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{ACTIVE_W}x{ACTIVE_H}"), "-r", fps, "-i", "pipe:0"]);
-    if !is_image {
-        if let Some(s) = a.start {
-            enc.args(["-ss", &s.to_string()]);
+    match (&sound, audio) {
+        (Some(wav), _) => {
+            enc.arg("-i").arg(wav.path());
+            enc.args(["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-shortest"]);
         }
-        enc.arg("-i").arg(&a.input);
-        if let Some(d) = a.duration {
-            enc.args(["-t", &d.to_string()]);
+        (None, AudioMode::Copy) => {
+            if let Some(s) = a.start {
+                enc.args(["-ss", &s.to_string()]);
+            }
+            enc.arg("-i").arg(&a.input);
+            if let Some(d) = a.duration {
+                enc.args(["-t", &d.to_string()]);
+            }
+            enc.args(["-map", "0:v", "-map", "1:a?", "-c:a", "aac", "-shortest"]);
         }
-        enc.args(["-map", "0:v", "-map", "1:a?", "-c:a", "aac", "-shortest"]);
+        _ => {}
     }
     // stills stay RGB (no 4:2:0 chroma subsampling); video is encoded as yuv420p
     enc.args(["-vf", &format!("scale={ow}:{oh}:flags=bicubic,format={}", if is_image { "rgb24" } else { "yuv420p" })]);
@@ -192,9 +243,6 @@ fn run(a: RunArgs) -> Result<()> {
     let mut enc_in = enc.stdin.take().unwrap();
 
     eprintln!("preset '{}' seed {}  {}x{} -> {}x{}  ({})", a.preset, a.seed, iw, ih, ow, oh, a.output.display());
-    // The tape, its defects and the timebase error are functions of the absolute frame index,
-    // so rendering from `--start` gives the same picture as rendering the whole file.
-    let start_frame = a.start.map_or(0, |s| (s * 30000.0 / 1001.0).round() as i64);
     let mut session = if a.bypass { None } else { Some(Chain::with_start(stages, start_frame)) };
     let t0 = Instant::now();
     let (mut n_in, mut n_out) = (0usize, 0usize);
