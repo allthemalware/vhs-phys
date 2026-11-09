@@ -26,6 +26,9 @@ from vhsgui.model import (
     LEAD_FRAMES,
     LOG_CHARS,
     PREVIEW_MAX_SIZE,
+    AUDIO_MODES,
+    MAX_GENERATIONS,
+    SIGNALS,
     GuiError,
     Look,
     MediaInfo,
@@ -45,6 +48,8 @@ ROTATION_SWAP = (90, 270)  # display rotations (degrees) that exchange width and
 ERROR_PREFIX = "Error: "  # what the CLI puts in front of a failure message
 MICROSECONDS = 1_000_000  # seeks are cut to this resolution
 ASPECT_TOLERANCE_STEPS = 8  # even widths tried below the largest one while fitting the aspect ratio
+DEFAULT_SIGNAL = "svideo"  # the deck's own Y/C: no composite stage is configured
+DEFAULT_AUDIO = "process"  # the core's default, so no flag is needed
 EVEN = 2  # video encoders need even frame dimensions
 ASPECT_EPSILON = 1e-9  # guards the floor of sizes that are exact in theory but not in floats
 
@@ -334,11 +339,86 @@ def merge_config(look: Look) -> str:
         advanced = tomllib.loads(look.advanced)
     except tomllib.TOMLDecodeError as err:
         raise GuiError(f"Advanced settings: {err}") from None
+    if look.signal not in SIGNALS:
+        raise GuiError(f"Unknown output signal '{look.signal}'")
     doc: dict[str, Any] = {"condition": dict(look.condition)} if look.condition else {}
-    _deep_merge(doc, advanced)
+    if look.signal != DEFAULT_SIGNAL:
+        doc["composite"] = {"enabled": True, "decoder": look.signal}
+    _deep_merge(doc, advanced)  # after the signal, so the advanced text wins
     lines: list[str] = []
     _emit_table(doc, (), lines)
     return "\n".join(lines) + "\n" if lines else ""
+
+
+def save_look(look: Look) -> str:
+    """A look file: the `[look]` table of the GUI followed by the core config derived from it.
+
+    The core ignores the unknown `[look]` table, so the file works as `--config` too."""
+    config = merge_config(look)  # validates the advanced text and the signal first
+    fields = {
+        "preset": look.preset,
+        "seed": look.seed,
+        "generations": look.generations,
+        "signal": look.signal,
+        "audio": look.audio,
+        "advanced": look.advanced,
+    }
+    lines = ["[look]"] + [f"{key} = {_toml_value(value)}" for key, value in fields.items()]
+    text = "\n".join(lines) + "\n"
+    if config:
+        text += "\n" + config
+    return text
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def load_look(text: str) -> Look:
+    """The inverse of `save_look`. Only `[look]` and `[condition]` are read; the rest is derived."""
+    try:
+        doc = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as err:
+        raise GuiError(f"Not a look file: {err}") from None
+    section = doc.get("look")
+    if not isinstance(section, dict):
+        raise GuiError("Not a look file: there is no [look] table")
+    defaults = Look()
+    preset = section.get("preset", defaults.preset)
+    if not isinstance(preset, str) or not preset:
+        raise GuiError("Look file: preset must be a non-empty string")
+    seed = section.get("seed", defaults.seed)
+    if not _is_int(seed) or seed < 0:
+        raise GuiError("Look file: seed must be an integer of 0 or more")
+    generations = section.get("generations", defaults.generations)
+    if not _is_int(generations) or not 1 <= generations <= MAX_GENERATIONS:
+        raise GuiError(f"Look file: generations must be an integer from 1 to {MAX_GENERATIONS}")
+    output_signal = section.get("signal", defaults.signal)
+    if output_signal not in SIGNALS:
+        raise GuiError(f"Look file: signal must be one of {', '.join(SIGNALS)}")
+    audio = section.get("audio", defaults.audio)
+    if audio not in AUDIO_MODES:
+        raise GuiError(f"Look file: audio must be one of {', '.join(AUDIO_MODES)}")
+    advanced = section.get("advanced", defaults.advanced)
+    if not isinstance(advanced, str):
+        raise GuiError("Look file: advanced must be a string")
+    raw = doc.get("condition", {})
+    if not isinstance(raw, dict):
+        raise GuiError("Look file: [condition] must be a table")
+    condition: dict[str, float | bool] = {}
+    for key, value in raw.items():
+        if not isinstance(value, (int, float, bool, str)):
+            raise GuiError(f"Look file: condition value '{key}' must be a number, a bool or a string")
+        condition[key] = value
+    return Look(
+        preset=preset,
+        seed=seed,
+        condition=condition,
+        advanced=advanced,
+        generations=generations,
+        signal=output_signal,
+        audio=audio,
+    )
 
 
 def validate_advanced(text: str) -> str | None:
@@ -363,6 +443,10 @@ def _micros(seconds: float) -> str:
 def run_args(binary: Path | str, req: RunRequest, config_path: Path | str | None) -> list[str]:
     """Command line of `vhsphys run` for a request."""
     args = [str(binary), "run", str(req.input), str(req.output), "--preset", req.look.preset, "--seed", str(req.look.seed)]
+    if req.look.generations > 1:
+        args += ["--generations", str(req.look.generations)]
+    if req.look.audio != DEFAULT_AUDIO:
+        args += ["--audio", req.look.audio]
     if config_path is not None:
         args += ["--config", str(config_path)]
     frame, seconds = snap_start(req.start)
