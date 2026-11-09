@@ -22,6 +22,13 @@ PREVIEW_MAX_SIZE = (640, 400)  # largest preview frame (width, height)
 PREVIEW_DEFAULT_SECONDS = 2.0
 LOG_CHARS = 4000  # how much of a process's stderr JobState.log keeps
 
+# How the picture reaches the screen: the deck's own Y/C, or summed into a composite signal and
+# separated again by a TV (a notch filter or a one- or two-line comb).
+SIGNALS = ("svideo", "notch", "comb1h", "comb2h")
+# What happens to the sound: simulated by the same tape and deck, left alone, or removed.
+AUDIO_MODES = ("process", "copy", "none")
+MAX_GENERATIONS = 8
+
 
 def frame_time(index: int) -> float:
     """Start time in seconds of frame `index` at the NTSC rate."""
@@ -121,6 +128,9 @@ class Look:
     condition: dict[str, float | bool] = field(default_factory=dict)
     # TOML text with raw parameter tables, e.g. "[tape]\ncreases_per_m = 0.5\n".
     advanced: str = ""
+    generations: int = 1  # dubs: 1 is the original recording, 2 a copy of it, ...
+    signal: str = "svideo"  # one of SIGNALS
+    audio: str = "process"  # one of AUDIO_MODES
 
 
 @dataclass

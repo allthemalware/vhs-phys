@@ -401,3 +401,53 @@ def test_the_core_accepts_what_merge_config_writes(binary, ffmpeg, clip, tmp_pat
     state = backend.Job(backend.run_args(binary, req, config)).start().wait(timeout=120)
     assert state.returncode == 0, state.log
     assert out.stat().st_size > 1000
+
+
+# ---------------------------------------------------------------- generations, signal, audio, look files
+
+
+def test_run_args_pass_generations_and_audio_only_when_they_matter():
+    plain = backend.run_args("/x/vhsphys", RunRequest("in.mp4", "out.mp4", Look(preset="good", seed=5)), None)
+    assert "--generations" not in plain and "--audio" not in plain
+    req = RunRequest("in.mp4", "out.mp4", Look(preset="good", seed=5, generations=3, audio="none"))
+    opts = _options(backend.run_args("/x/vhsphys", req, None)[4:])
+    assert opts["--generations"] == "3" and opts["--audio"] == "none"
+    req = RunRequest("in.mp4", "out.mp4", Look(audio="copy"))
+    assert _options(backend.run_args("/x/vhsphys", req, None)[4:])["--audio"] == "copy"
+
+
+def test_the_output_signal_becomes_a_composite_table():
+    doc = tomllib.loads(backend.merge_config(Look(signal="comb1h")))
+    assert doc["composite"] == {"enabled": True, "decoder": "comb1h"}
+    assert "composite" not in tomllib.loads(backend.merge_config(Look(signal="svideo")))
+    doc = tomllib.loads(backend.merge_config(Look(signal="notch", advanced='[composite]\ndecoder = "comb2h"\n')))
+    assert doc["composite"] == {"enabled": True, "decoder": "comb2h"}, "the advanced text wins"
+
+
+def test_a_look_survives_a_round_trip_through_a_look_file():
+    look = Look(
+        preset="bad", seed=77, generations=3, signal="comb1h", audio="copy",
+        condition={"head_wear": 0.7, "psu_smps": True, "tape_speed": "lp"},
+        advanced='[tape]\ncreases_per_m = 0.5\n[deck]\neq_peaks = [[5.4e6, 0.9, 6.0]]\n',
+    )
+    assert backend.load_look(backend.save_look(look)) == look
+    assert backend.load_look(backend.save_look(Look())) == Look()
+
+
+def test_a_look_file_is_also_a_valid_core_config(binary, clip, tmp_path):
+    look = Look(preset="good", seed=3, condition={"head_wear": 0.4}, signal="comb1h")
+    config = tmp_path / "look.toml"
+    config.write_text(backend.save_look(look))
+    out = tmp_path / "out.mp4"
+    req = RunRequest(str(clip), str(out), look, duration=0.4, size=(320, 240))
+    state = backend.Job(backend.run_args(binary, req, config)).start().wait(timeout=120)
+    assert state.returncode == 0, state.log
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["not toml [", "[tape]\nx = 1\n", "[look]\npreset = 5\n", "[look]\ngenerations = 0\n", '[look]\nsignal = "vga"\n', '[look]\naudio = "loud"\n', "[look]\nseed = -1\n"],
+)
+def test_bad_look_files_are_gui_errors(text):
+    with pytest.raises(GuiError):
+        backend.load_look(text)
