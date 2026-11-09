@@ -1,0 +1,240 @@
+//! NTSC raster: RGB frame <-> baseband luma/chroma at 4 x fsc, including the
+//! full vertical-sync structure (equalising pulses, serrated vsync, half-line
+//! field offset) so that the head-switch position relative to vsync is real.
+//!
+//! Chroma is carried as a complex baseband value `C = cu + j*cv` in IRE, with
+//! `cu` along the +U axis. The colour burst is `-BURST_AMP` on `cu` (180 deg).
+
+use crate::consts::*;
+use std::sync::OnceLock;
+
+/// An RGB frame at the active-picture size (754 x 480).
+#[derive(Clone)]
+pub struct Frame {
+    pub w: usize,
+    pub h: usize,
+    pub rgb: Vec<u8>,
+}
+
+impl Frame {
+    pub fn new(w: usize, h: usize) -> Self {
+        Self { w, h, rgb: vec![0; w * h * 3] }
+    }
+}
+
+/// One frame in the baseband domain (FRAME_BB samples each).
+#[derive(Clone)]
+pub struct Baseband {
+    pub y: Vec<f32>,
+    pub cu: Vec<f32>,
+    pub cv: Vec<f32>,
+}
+
+impl Baseband {
+    pub fn blank() -> Self {
+        let (y, _) = structure();
+        Self { y: y.clone(), cu: vec![0.0; FRAME_BB], cv: vec![0.0; FRAME_BB] }
+    }
+}
+
+struct Structure {
+    sync: Vec<f32>,
+    burst_line: Vec<bool>,
+}
+
+fn structure() -> (&'static Vec<f32>, &'static Vec<bool>) {
+    static S: OnceLock<Structure> = OnceLock::new();
+    let s = S.get_or_init(build_structure);
+    (&s.sync, &s.burst_line)
+}
+
+fn pulse(buf: &mut [f32], start: usize, width: usize) {
+    for i in 0..width {
+        let idx = start + i;
+        if idx >= buf.len() {
+            break;
+        }
+        buf[idx] = if i == 0 || i == width - 1 { SYNC_IRE / 2.0 } else { SYNC_IRE };
+    }
+}
+
+fn build_structure() -> Structure {
+    let mut sync = vec![BLANK_IRE; FRAME_BB];
+    let mut burst_line = vec![false; LINES];
+    for h in 0..(2 * LINES) {
+        let hp = if h >= LINES { h - LINES } else { h };
+        let s0 = h * HALF_LINE_BB;
+        if hp < 6 || (12..18).contains(&hp) {
+            pulse(&mut sync, s0, EQ_PULSE_W);
+        } else if (6..12).contains(&hp) {
+            pulse(&mut sync, s0, HALF_LINE_BB - HSYNC_W);
+        } else if h % 2 == 0 {
+            pulse(&mut sync, s0, HSYNC_W);
+            burst_line[h / 2] = true;
+        }
+    }
+    Structure { sync, burst_line }
+}
+
+#[inline]
+pub fn rgb_to_ycc(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    let y = 0.299 * r + 0.587 * g + 0.114 * b;
+    let u = 0.492 * (b - y);
+    let v = 0.877 * (r - y);
+    (SETUP_IRE + VIDEO_SPAN_IRE * y, VIDEO_SPAN_IRE * u, VIDEO_SPAN_IRE * v)
+}
+
+#[inline]
+pub fn ycc_to_rgb(y_ire: f32, cu: f32, cv: f32) -> [f32; 3] {
+    let y = (y_ire - SETUP_IRE) / VIDEO_SPAN_IRE;
+    let u = cu / VIDEO_SPAN_IRE;
+    let v = cv / VIDEO_SPAN_IRE;
+    let r = y + v / 0.877;
+    let b = y + u / 0.492;
+    let g = (y - 0.299 * r - 0.114 * b) / 0.587;
+    [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]
+}
+
+/// Frame line (0-based) and field of display row `r` (0..480).
+pub fn row_to_line(row: usize) -> (usize, usize) {
+    let field = row % 2;
+    (FIELD_FIRST_LINE[field] + row / 2, field)
+}
+
+pub fn burst_present(line: usize) -> bool {
+    structure().1[line]
+}
+
+/// Encode an RGB frame (754 x 480) to baseband Y / C.
+pub fn encode_frame(frame: &Frame) -> Baseband {
+    assert!(frame.w == ACTIVE_W && frame.h == ACTIVE_H, "frame must be {ACTIVE_W}x{ACTIVE_H}");
+    let (sync, burst_line) = structure();
+    let mut bb = Baseband { y: sync.clone(), cu: vec![0.0; FRAME_BB], cv: vec![0.0; FRAME_BB] };
+
+    for line in 0..LINES {
+        if burst_line[line] {
+            let s0 = line * BB_PER_LINE + BURST_START;
+            for i in 0..BURST_LEN {
+                // 4-sample raised-cosine edges keep the burst narrow-band
+                let e = (i.min(BURST_LEN - 1 - i) as f32 / 4.0).min(1.0);
+                let w = 0.5 - 0.5 * (std::f32::consts::PI * e).cos();
+                bb.cu[s0 + i] = -BURST_AMP_IRE * w;
+            }
+        }
+    }
+
+    for row in 0..ACTIVE_H {
+        let (line, _) = row_to_line(row);
+        let base = line * BB_PER_LINE + ACTIVE_START;
+        for x in 0..ACTIVE_W {
+            let p = (row * ACTIVE_W + x) * 3;
+            let (r, g, b) = (
+                frame.rgb[p] as f32 / 255.0,
+                frame.rgb[p + 1] as f32 / 255.0,
+                frame.rgb[p + 2] as f32 / 255.0,
+            );
+            let (y, u, v) = rgb_to_ycc(r, g, b);
+            bb.y[base + x] = y;
+            bb.cu[base + x] = u;
+            bb.cv[base + x] = v;
+        }
+    }
+    bb
+}
+
+/// Perfect-timing decode used for tests and the `--bypass` reference mode.
+pub fn decode_ideal(bb: &Baseband) -> Frame {
+    let mut f = Frame::new(ACTIVE_W, ACTIVE_H);
+    for row in 0..ACTIVE_H {
+        let (line, _) = row_to_line(row);
+        let base = line * BB_PER_LINE + ACTIVE_START;
+        for x in 0..ACTIVE_W {
+            let rgb = ycc_to_rgb(bb.y[base + x], bb.cu[base + x], bb.cv[base + x]);
+            let p = (row * ACTIVE_W + x) * 3;
+            for k in 0..3 {
+                f.rgb[p + k] = (rgb[k] * 255.0 + 0.5) as u8;
+            }
+        }
+    }
+    f
+}
+
+/// SMPTE-style colour bars plus a grey ramp, used for tests and examples.
+pub fn test_pattern() -> Frame {
+    let mut f = Frame::new(ACTIVE_W, ACTIVE_H);
+    let bars: [[f32; 3]; 7] = [
+        [0.75, 0.75, 0.75], [0.75, 0.75, 0.0], [0.0, 0.75, 0.75], [0.0, 0.75, 0.0],
+        [0.75, 0.0, 0.75], [0.75, 0.0, 0.0], [0.0, 0.0, 0.75],
+    ];
+    for y in 0..ACTIVE_H {
+        for x in 0..ACTIVE_W {
+            let c = if y < ACTIVE_H * 2 / 3 {
+                bars[x * 7 / ACTIVE_W]
+            } else if y < ACTIVE_H * 5 / 6 {
+                let g = x as f32 / (ACTIVE_W - 1) as f32;
+                [g, g, g]
+            } else {
+                // black / white edge blocks with fine vertical lines (resolution)
+                let stripe = (x / 3) % 2 == 0;
+                if x < ACTIVE_W / 2 { if stripe { [1.0; 3] } else { [0.0; 3] } } else { [(x / 60 % 2) as f32; 3] }
+            };
+            let p = (y * ACTIVE_W + x) * 3;
+            for k in 0..3 {
+                f.rgb[p + k] = (c[k] * 255.0) as u8;
+            }
+        }
+    }
+    f
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vertical_sync_structure() {
+        let (sync, burst) = structure();
+        // 18 half-lines of vertical interval at each field start, no burst in them
+        assert!(!burst[0] && !burst[8]);
+        assert!(burst[9]);
+        // field 2 begins at half-line 525 => burst resumes at line 272 (h = 544)
+        assert!(!burst[262 + 5] && burst[272]);
+        // serrated vsync: first broad pulse low until 67 samples before the next half-line
+        assert_eq!(sync[6 * HALF_LINE_BB + 100], SYNC_IRE);
+        assert_eq!(sync[6 * HALF_LINE_BB + HALF_LINE_BB - 10], BLANK_IRE);
+        // normal line: sync then blanking
+        let l = 100 * BB_PER_LINE;
+        assert_eq!(sync[l + 10], SYNC_IRE);
+        assert_eq!(sync[l + 200], BLANK_IRE);
+        // 262 normal-ish lines + 1 half line: sync present at the field boundary half line
+        assert_eq!(sync[525 * HALF_LINE_BB + 10], SYNC_IRE);
+    }
+
+    #[test]
+    fn encode_decode_round_trips() {
+        let f = test_pattern();
+        let bb = encode_frame(&f);
+        let g = decode_ideal(&bb);
+        let mut worst = 0i32;
+        for (a, b) in f.rgb.iter().zip(g.rgb.iter()) {
+            worst = worst.max((*a as i32 - *b as i32).abs());
+        }
+        assert!(worst <= 2, "worst error {worst}");
+    }
+
+    #[test]
+    fn peak_composite_levels_are_legal_for_75_percent_bars() {
+        let f = test_pattern();
+        let bb = encode_frame(&f);
+        // 75% yellow: Y' = 0.665 -> luma 69 IRE; chroma amplitude 31 IRE, so the
+        // composite peaks at 100 IRE exactly as in a real NTSC 75% bar signal.
+        let line = FIELD_FIRST_LINE[0] + 5;
+        let x = ACTIVE_W * 3 / 14; // middle of bar 2 (yellow)
+        let s = line * BB_PER_LINE + ACTIVE_START + x;
+        let amp = (bb.cu[s].powi(2) + bb.cv[s].powi(2)).sqrt();
+        assert!((bb.y[s] - 69.0).abs() < 1.5, "{}", bb.y[s]);
+        assert!((amp - 31.0).abs() < 1.5, "{amp}");
+        assert!((bb.y[s] + amp - 100.0).abs() < 2.0);
+    }
+}
+

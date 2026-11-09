@@ -1,0 +1,15 @@
+# Example config: a mid-life deck whose supply capacitors are failing, playing
+# a clean tape. Run with:
+#   vhsphys run in.mp4 out.mp4 --preset good --config presets/dry-caps-example.toml
+[condition]
+deck_age_years = 36
+deck_temp_c = 66        # hot cabinet: life halves per +10 C
+mains_hz = 60
+mains_sag = 0.05        # a weak mains supply leaves the regulator no headroom
+
+# raw physical overrides applied after the condition is mapped to parameters
+[deck.supply]
+ripple_peakiness = 0.9  # sharp charging pulses (high ESR)
+
+[head]
+cnr_db = 38.0           # both heads
