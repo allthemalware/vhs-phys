@@ -29,6 +29,16 @@ the clock. `control_rect`, `screen_rect` and the mouse positions are in widget c
 on `current_control()` (set by a press or by `set_current_control`): Left/Right step (Shift: ten steps),
 Home/End go to the ends, Space flips a toggle, Up/Down move to the nearest row above/below whose extent
 overlaps more than half of the current row's width. The wheel and the mouse act on the row under the pointer.
+
+Also specified here: the widget has strong focus and mouse tracking; sizeHint() is the canvas size and
+minimumSizeHint() at least 900 px wide. Sliders: the whole row is the track; Shift multiplies a wheel or key
+step by ten. Steppers: a click on the left (right) half of the row steps down (up), Shift makes it ten, the
+value is clamped. Toggles flip on a click or Space. Choices: a left click cycles forward and wraps; a right
+click or a Shift click goes back and wraps; the wheel and the arrow keys step without wrapping. A double
+click emits resetRequested and nothing else. set_choices() keeps the current word if it is still offered and
+falls back to the first one otherwise. A click on the TV screen zooms it; any click or Esc puts it back and
+nothing else reacts while it is zoomed. hint_text() is the help of the hovered line, else of the current
+line, else the layout's `hint.default`.
 """
 from __future__ import annotations
 
@@ -369,8 +379,10 @@ def test_pressing_and_dragging_along_a_slider_row_sets_the_value_from_the_positi
 def test_a_slider_snaps_to_its_step_while_dragging(view):
     c = CONTROLS["tape_age_years"]
     press(view, at(view, "tape_age_years", 0.37))
+    drag(view, at(view, "tape_age_years", 0.613))
+    release(view, at(view, "tape_age_years", 0.613))
     n = (view.value("tape_age_years") - c["min"]) / c["step"]
-    assert n == pytest.approx(round(n), abs=1e-6)
+    assert n == pytest.approx(round(n), abs=1e-6) and 0.5 * (c["max"] - c["min"]) < view.value("tape_age_years") - c["min"] < 0.7 * (c["max"] - c["min"])
 
 
 def test_the_wheel_and_the_keys_step_a_slider(view):
@@ -404,6 +416,7 @@ def test_the_wheel_and_the_keys_step_a_slider(view):
 
 def test_the_wheel_acts_on_the_row_under_the_pointer_only(view):
     view.set_value("head_wear", 0.5)
+    view.set_current_control("head_wear")
     wheel(view, QPointF(2, 2), 120)
     assert view.value("head_wear") == pytest.approx(0.5)
 
@@ -537,10 +550,16 @@ def test_the_arrow_keys_move_between_the_rows_of_a_block(view):
     ids = view.control_ids()
     rects = {cid: view.control_rect(cid) for cid in ids}
 
+    def overlaps(r, o):
+        return min(rects[o].right(), r.right()) - max(rects[o].left(), r.left()) > 0.5 * r.width()
+
     def below(cid):
         r = rects[cid]
-        cands = [o for o in ids if rects[o].top() > r.top() + 1 and min(rects[o].right(), r.right()) - max(rects[o].left(), r.left()) > 0.5 * r.width()]
-        return min(cands, key=lambda o: rects[o].top(), default=None)
+        return min((o for o in ids if rects[o].top() > r.top() + 1 and overlaps(r, o)), key=lambda o: rects[o].top(), default=None)
+
+    def above(cid):
+        r = rects[cid]
+        return max((o for o in ids if rects[o].top() < r.top() - 1 and overlaps(r, o)), key=lambda o: rects[o].top(), default=None)
 
     movable = [cid for cid in ids if below(cid) is not None]
     assert len(movable) >= 12
@@ -549,7 +568,7 @@ def test_the_arrow_keys_move_between_the_rows_of_a_block(view):
         key(view, Qt.Key.Key_Down)
         assert view.current_control() == below(cid), cid
         key(view, Qt.Key.Key_Up)
-        assert view.current_control() == cid, cid
+        assert view.current_control() == above(below(cid)), cid
     last = next(cid for cid in ids if below(cid) is None)
     view.set_current_control(last)
     key(view, Qt.Key.Key_Down)
@@ -682,7 +701,7 @@ def test_it_looks_like_a_phosphor_screen(view):
     mask = a.max(axis=2) > 60
     assert 0.02 <= mask.mean() <= 0.45, "drawn, neither blank nor flooded"
     tv = view.screen_rect().adjusted(-4, -4, 4, 4)
-    mask[int(tv.top()) : int(tv.bottom()), int(tv.left()) : int(tv.right())] = False  # the picture has its own colours
+    mask[max(0, int(tv.top())) : int(tv.bottom()), max(0, int(tv.left())) : int(tv.right())] = False  # the picture has its own colours
     r, g, b = a[mask].sum(axis=0)
     assert g > 1.6 * r and g > 1.3 * b, "green phosphor"
 
@@ -692,7 +711,7 @@ def test_the_glow_adds_light_around_the_strokes_and_never_takes_any_away(view):
     view.set_screen_image(picture())
     tv = view.screen_rect().adjusted(-8, -8, 8, 8)
     outside = np.ones((CH, CW), bool)  # the picture is not part of the drawing's glow
-    outside[int(tv.top()) : int(tv.bottom()), int(tv.left()) : int(tv.right())] = False
+    outside[max(0, int(tv.top())) : int(tv.bottom()), max(0, int(tv.left())) : int(tv.right())] = False
     view.set_effects(**NO_EFFECTS)
     crisp = lum(shot(view))
     view.set_effects(glow=True, scanlines=False, vignette=False)
