@@ -902,3 +902,33 @@ def test_painting_is_fast_enough_to_animate(view):
         view.advance(0.03)
         view.grab()
     assert time.perf_counter() - start < 6.0, "20 repaints took over 6 s: no blur filters, cache what does not move"
+
+
+def _best_ms(fn, runs=15):
+    fn()
+    best = float("inf")
+    for _ in range(runs):
+        start = time.perf_counter()
+        fn()
+        best = min(best, (time.perf_counter() - start) * 1000)
+    return best
+
+
+def test_a_frame_has_a_time_budget(view):
+    """The view stays open all day: static content is painted once and cached, only what moves is redrawn.
+
+    Budgets are for a 1180 x 620 view on a desktop machine, best of fifteen (a full repaint of everything
+    takes about 14 ms; the budgets ask for a fraction of that)."""
+    view.set_screen_image(picture())
+    view.set_animated(False)
+    view.advance(5.0)
+    still = _best_ms(view.grab)
+    view.set_animated(True)
+
+    def tick():
+        view.advance(0.033)
+        view.grab()
+
+    moving = _best_ms(tick)
+    assert still <= 5.0, f"a repaint of a scene that did not change took {still:.1f} ms (budget 5 ms): cache it"
+    assert moving <= 8.0, f"a repaint with the pulses and reels moving took {moving:.1f} ms (budget 8 ms): redraw only what moves"
