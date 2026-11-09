@@ -76,6 +76,8 @@ def test_preset_condition_has_every_field_the_window_offers(binary):
     assert set(cond) == {f.key for f in CONDITION_FIELDS}
     for spec in CONDITION_FIELDS:
         assert isinstance(cond[spec.key], bool) == (spec.kind == "bool"), spec.key
+        if spec.kind == "choice":
+            assert cond[spec.key] in spec.choices, spec.key
     assert cond["head_wear"] == pytest.approx(0.4)
     assert cond["psu_smps"] is False
 

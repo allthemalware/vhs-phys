@@ -147,6 +147,17 @@ impl Mech {
         e
     }
 
+    /// Capstan wow: the slow drift of the transport, seconds at time `t`. The audio track is
+    /// read by a stationary head, so this is the speed error the sound shares with the picture.
+    pub fn wow(&self, t: f64) -> f64 {
+        self.slow.eval(t)
+    }
+
+    /// Faster transport error: the tape-path resonance and stick-slip scrape, seconds.
+    pub fn flutter(&self, t: f64) -> f64 {
+        self.tension.eval(t) + self.stick.eval(t)
+    }
+
     fn line_node(&self, l: i64) -> f64 {
         let h = hash3(self.seed, 15, l as u64);
         // sum of 4 uniforms, scaled to unit variance: close enough to Gaussian

@@ -8,6 +8,7 @@
 //! estimate rather than a published figure it is marked `[est]`; the numbers
 //! are meant to be tuned against real tapes and decks.
 
+use crate::format::TapeSpeed;
 use crate::pipeline::Params;
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
@@ -30,6 +31,8 @@ pub struct Condition {
     pub tape_stretch: f64,
     /// Position on the tape of the clip, metres from the start.
     pub tape_position_m: f64,
+    /// Recording speed: sp, lp or ep (narrower tracks, more noise and crosstalk, less audio bandwidth).
+    pub tape_speed: TapeSpeed,
     // ---- heads and drum (playback deck) ----
     pub head_wear: f64,
     /// 0..1 debris build-up on one head.
@@ -68,6 +71,7 @@ impl Default for Condition {
             tape_passes: 1.0,
             tape_stretch: 0.0,
             tape_position_m: 60.0,
+            tape_speed: TapeSpeed::Sp,
             head_wear: 0.0,
             head_clog: 0.0,
             drum_wear: 0.0,
@@ -186,6 +190,7 @@ impl Condition {
     /// Build the full physical parameter set.
     pub fn to_params(&self, seed: u64) -> Params {
         let mut p = Params { seed, ..Params::default() };
+        p.speed = self.tape_speed;
         let mut rng = Rng::new(seed, STREAM_COND, 0);
         let mut g = move || rng.gauss() as f64;
 

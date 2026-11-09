@@ -46,12 +46,13 @@ class FieldSpec:
     key: str  # name in the core's [condition] table
     label: str
     group: str  # one of GROUPS
-    kind: str  # "float" or "bool"
+    kind: str  # "float", "bool" or "choice"
     lo: float = 0.0
     hi: float = 1.0
     step: float = 0.01
     unit: str = ""
     help: str = ""
+    choices: tuple[str, ...] = ()  # the values of a "choice" field, in menu order
 
 
 CONDITION_FIELDS: tuple[FieldSpec, ...] = (
@@ -60,6 +61,7 @@ CONDITION_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("tape_storage", "Storage", "Tape", "float", 0, 1, 0.01, "", "0 = cool dry shelf, 1 = hot humid attic."),
     FieldSpec("tape_quality", "Tape quality", "Tape", "float", 0, 1, 0.01, "", "0 = cheap tape, 1 = premium (smoother, better calendered coating)."),
     FieldSpec("tape_passes", "Earlier plays", "Tape", "float", 0, 200, 1, "", "How often the tape has been played already; loose debris wears off."),
+    FieldSpec("tape_speed", "Tape speed", "Tape", "choice", help="SP, LP or EP: slower tapes have narrower tracks, so more noise and crosstalk, and less audio bandwidth.", choices=("sp", "lp", "ep")),
     FieldSpec("tape_stretch", "Stretch and edge damage", "Tape", "float", 0, 1, 0.01, "", "0 = fine, 1 = stretched, creased and edge damaged."),
     FieldSpec("tape_position_m", "Position on tape", "Tape", "float", 0, 400, 1, "m", "Where the clip sits on the tape. Other positions give other defects."),
     # ---- heads and drum ----

@@ -96,6 +96,14 @@ pub fn sets_to_toml(sets: &[String]) -> Result<String, String> {
     Ok(items.into_iter().map(|(k, v)| format!("{k} = {v}\n")).collect())
 }
 
+/// Parameters of every deck in a chain of `generations` dubs. Generation 0 is exactly
+/// `build(preset, text, seed)`; each later generation is a different tape and deck (its
+/// own seed, so its own defects, wear draws and timebase) with the same condition.
+pub fn generation_params(preset: Option<&str>, text: &str, seed: u64, generations: usize) -> Result<Vec<Params>, String> {
+    let _ = (preset, text, seed, generations);
+    unimplemented!("generation chain")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

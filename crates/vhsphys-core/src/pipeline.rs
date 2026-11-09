@@ -10,9 +10,12 @@
 //! Intermediate results are cached per field and evicted when no longer needed.
 
 use serde::{Deserialize, Serialize};
+use crate::audio::AudioParams;
+use crate::composite::CompositeParams;
 use crate::consts::*;
 use crate::decode::{decode_frame, demod_chroma, DecodeParams, StreamView};
 use crate::electronics::{process_segment, DeckParams};
+use crate::format::TapeSpeed;
 use crate::head::*;
 use crate::mech::{Mech, MechParams};
 use crate::record::*;
@@ -38,6 +41,12 @@ pub struct Params {
     pub tape: TapeParams,
     pub mech: MechParams,
     pub tracking: TrackingParams,
+    /// Tape speed: sets the track pitch, the tape advance and the audio bandwidth.
+    pub speed: TapeSpeed,
+    /// Composite video stage after the deck's decode (off by default).
+    pub composite: CompositeParams,
+    /// The audio path of the same deck and tape.
+    pub audio: AudioParams,
 }
 
 impl Default for Params {
@@ -51,6 +60,9 @@ impl Default for Params {
             tape: TapeParams::default(),
             mech: MechParams::default(),
             tracking: TrackingParams::default(),
+            speed: TapeSpeed::default(),
+            composite: CompositeParams::default(),
+            audio: AudioParams::default(),
         }
     }
 }
@@ -451,5 +463,49 @@ impl Session {
             out.extend(s.process(4));
         }
         out
+    }
+}
+
+/// A chain of decks: each generation re-records the previous generation's playback, the
+/// way a dub does ("a copy of a copy"). Stage 0 sees the source; every later stage sees the
+/// picture the stage before it played back. One stage is exactly a plain `Session`.
+pub struct Chain {
+    stages: Vec<Session>,
+}
+
+impl Chain {
+    pub fn new(stages: Vec<Params>) -> Self {
+        Self::with_start(stages, 0)
+    }
+
+    /// As `Session::with_start`: the tapes are functions of the absolute frame index.
+    pub fn with_start(stages: Vec<Params>, start: i64) -> Self {
+        let _ = (&stages, start);
+        unimplemented!("generation chain")
+    }
+
+    pub fn push(&mut self, f: &Frame) {
+        let _ = f;
+        unimplemented!("generation chain")
+    }
+
+    pub fn finish(&mut self) {
+        unimplemented!("generation chain")
+    }
+
+    /// Output frames that can be produced right now.
+    pub fn ready(&self) -> i64 {
+        unimplemented!("generation chain")
+    }
+
+    pub fn process(&mut self, max_frames: usize) -> Vec<Frame> {
+        let _ = max_frames;
+        unimplemented!("generation chain")
+    }
+
+    /// Convenience: run a whole clip through every generation.
+    pub fn run(stages: Vec<Params>, input: &[Frame]) -> Vec<Frame> {
+        let _ = (stages, input);
+        unimplemented!("generation chain")
     }
 }

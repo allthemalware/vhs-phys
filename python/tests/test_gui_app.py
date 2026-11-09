@@ -100,8 +100,14 @@ def test_the_fields_follow_the_preset(app, window):
     assert look.condition["head_wear"] == pytest.approx(0.75) and look.condition["psu_smps"] is True
     assert set(look.condition) == {f.key for f in CONDITION_FIELDS}
 
+    speed = child(window, QComboBox, "field_tape_speed")
+    assert speed.currentData() == "sp" and window.look().condition["tape_speed"] == "sp"
+    speed.setCurrentIndex(speed.findData("ep"))
+    assert window.look().condition["tape_speed"] == "ep"
+
     child(window, QAbstractButton, "resetButton").click()
     assert wear.value() == pytest.approx(0.4) and not smps.isChecked()
+    assert speed.currentData() == "sp"
 
 
 def test_the_seed_is_part_of_the_look(app, window):

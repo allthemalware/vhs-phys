@@ -7,12 +7,15 @@
 //! (equaliser, dropout compensator, limiter, FM discriminator, emphasis) ->
 //! sync/colour decoding -> frame.
 
+pub mod audio;
+pub mod composite;
 pub mod condition;
 pub mod config;
 pub mod consts;
 pub mod decode;
 pub mod dsp;
 pub mod electronics;
+pub mod format;
 pub mod head;
 pub mod mech;
 pub mod pipeline;
