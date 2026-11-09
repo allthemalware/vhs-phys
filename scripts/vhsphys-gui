@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Start the vhs-phys GUI from a checkout:  scripts/vhsphys-gui [input-video]
+root=$(cd "$(dirname "$0")/.." && pwd)
+python="$root/.venv/bin/python"
+[ -x "$python" ] || python=python3
+PYTHONPATH="$root/python${PYTHONPATH:+:$PYTHONPATH}" exec "$python" -m vhsgui "$@"
