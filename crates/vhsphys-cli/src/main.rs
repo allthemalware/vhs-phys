@@ -34,6 +34,10 @@ enum Cmd {
         preset: String,
         #[arg(long, default_value_t = 1)]
         seed: u64,
+        /// Print the high-level condition of the preset (the `[condition]` table of a config
+        /// file) instead of the full parameter set.
+        #[arg(long)]
+        condition: bool,
     },
 }
 
@@ -171,7 +175,10 @@ fn run(a: RunArgs) -> Result<()> {
     let mut enc_in = enc.stdin.take().unwrap();
 
     eprintln!("preset '{}' seed {}  {}x{} -> {}x{}  ({})", a.preset, a.seed, iw, ih, ow, oh, a.output.display());
-    let mut session = if a.bypass { None } else { Some(Session::new(params)) };
+    // The tape, its defects and the timebase error are functions of the absolute frame index,
+    // so rendering from `--start` gives the same picture as rendering the whole file.
+    let start_frame = a.start.map_or(0, |s| (s * 30000.0 / 1001.0).round() as i64);
+    let mut session = if a.bypass { None } else { Some(Session::with_start(params, start_frame)) };
     let t0 = Instant::now();
     let (mut n_in, mut n_out) = (0usize, 0usize);
     let limit = a.frames.unwrap_or(usize::MAX);
@@ -230,9 +237,15 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
-        Cmd::Show { preset, seed } => {
-            let p = config::build(Some(&preset), "", seed).map_err(anyhow::Error::msg)?;
-            print!("{}", toml::to_string_pretty(&p)?);
+        Cmd::Show { preset, seed, condition } => {
+            if condition {
+                let c = Condition::preset(&preset)
+                    .with_context(|| format!("unknown preset '{preset}' (try: {})", Condition::preset_names().join(", ")))?;
+                print!("{}", toml::to_string_pretty(&c)?);
+            } else {
+                let p = config::build(Some(&preset), "", seed).map_err(anyhow::Error::msg)?;
+                print!("{}", toml::to_string_pretty(&p)?);
+            }
             Ok(())
         }
     }
