@@ -9,10 +9,10 @@ import os
 import random
 import shutil
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop, QRect, Qt, QTimer, QUrl
+from PySide6.QtCore import QEventLoop, QRect, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
     QCloseEvent,
     QColor,
@@ -20,8 +20,10 @@ from PySide6.QtGui import (
     QFontDatabase,
     QImage,
     QKeySequence,
+    QMouseEvent,
     QPainter,
     QPaintEvent,
+    QPen,
     QShortcut,
 )
 from PySide6.QtWidgets import (
@@ -51,10 +53,13 @@ from PySide6.QtWidgets import (
 
 from vhsgui import backend
 from vhsgui.model import (
+    AUDIO_MODES,
     CONDITION_FIELDS,
     FPS,
     GROUPS,
+    MAX_GENERATIONS,
     PREVIEW_DEFAULT_SECONDS,
+    SIGNALS,
     FieldSpec,
     Frames,
     GuiError,
@@ -102,9 +107,25 @@ RGB_BYTES = 3  # bytes per pixel of the decoded frames
 PREVIEW_FILE = "preview.mp4"
 CONFIG_FILE = "look.toml"
 
+# Menu texts, in the order of SIGNALS and AUDIO_MODES.
+SIGNAL_LABELS = ("S-Video", "Composite, notch", "Composite, 1-line comb", "Composite, 2-line comb")
+AUDIO_LABELS = ("Simulate", "Keep original", "Remove")
+PREVIEW_AUDIO = "none"  # a preview is only looked at, so the sound is never rendered for it
+
+SPLIT_DEFAULT = 0.5  # the divider starts in the middle
+SPLIT_MIN = 0.02  # the divider stays inside the picture so it can always be grabbed again
+SPLIT_MAX = 0.98
+DIVIDER_COLOR = "#ffffff"
+DIVIDER_WIDTH = 1
+
 VIDEO_FILTER = "Video (*.mp4 *.mov *.mkv *.avi *.webm *.m4v *.ts);;All files (*)"
 SAVE_FILTER = "MP4 (*.mp4);;Matroska (*.mkv);;QuickTime (*.mov)"
 DEFAULT_SUFFIX = ".mp4"
+LOOK_FILTER = "Look (*.toml)"
+LOOK_SUFFIX = ".toml"
+FRAME_FILTER = "PNG (*.png)"
+FRAME_SUFFIX = ".png"
+FRAME_FORMAT = "PNG"
 FILTER_SUFFIXES = {"MP4 (*.mp4)": ".mp4", "Matroska (*.mkv)": ".mkv", "QuickTime (*.mov)": ".mov"}
 SIZE_CHOICES: tuple[tuple[str, tuple[int, int] | None], ...] = (
     ("Same as input", None),
@@ -116,6 +137,7 @@ SIZE_CHOICES: tuple[tuple[str, tuple[int, int] | None], ...] = (
 
 MODE_ORIGINAL = "original"
 MODE_PROCESSED = "processed"
+MODE_SPLIT = "split"
 TASK_PREVIEW = "preview"
 TASK_RENDER = "render"
 
@@ -180,31 +202,90 @@ def _wrapping_label(name: str, text: str = "") -> QLabel:
 
 
 class PreviewView(QWidget):
-    """Paints one image, scaled to fit, on a dark background."""
+    """Paints one image, scaled to fit, on a dark background.
+
+    In split mode it holds two frames and shows the first left of a divider and the second
+    right of it; `image()` then returns that composition at the native frame size."""
+
+    image_changed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._image: QImage | None = None
+        self._pair: tuple[QImage, QImage] | None = None  # original and processed, same size
+        self._split = SPLIT_DEFAULT
         self.setMinimumSize(*PREVIEW_MIN_SIZE)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
+    @property
+    def split(self) -> float:
+        return self._split
+
+    def set_split(self, x: float) -> None:
+        self._split = max(SPLIT_MIN, min(SPLIT_MAX, float(x)))
+        if self._pair is not None:
+            self._image = self._compose(*self._pair)
+            self.image_changed.emit()
+        self.update()
+
     def set_image(self, image: QImage | None) -> None:
+        self._pair = None
         self._image = image
+        self.image_changed.emit()
+        self.update()
+
+    def set_split_images(self, original: QImage, processed: QImage) -> None:
+        self._pair = (original, processed)
+        self._image = self._compose(original, processed)
+        self.image_changed.emit()
         self.update()
 
     def image(self) -> QImage | None:
         return self._image
 
+    def _compose(self, original: QImage, processed: QImage) -> QImage:
+        composed = processed.convertToFormat(QImage.Format.Format_RGB32)
+        left = QRect(0, 0, round(self._split * composed.width()), composed.height())
+        painter = QPainter(composed)
+        painter.drawImage(left, original, left)
+        painter.end()
+        return composed
+
+    def _target(self) -> QRect | None:
+        """Where the image is painted, or None without one."""
+        image = self._image
+        if image is None or image.isNull():
+            return None
+        fitted = image.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
+        target = QRect(0, 0, fitted.width(), fitted.height())
+        target.moveCenter(self.rect().center())
+        return target
+
+    def _drag_divider(self, event: QMouseEvent) -> None:
+        target = self._target()
+        if self._pair is None or target is None or target.width() <= 0:
+            return
+        self.set_split((event.position().x() - target.left()) / target.width())
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_divider(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._drag_divider(event)
+
     def paintEvent(self, event: QPaintEvent) -> None:
         painter = QPainter(self)
         painter.fillRect(self.rect(), QColor(PREVIEW_BACKGROUND))
-        image = self._image
-        if image is not None and not image.isNull():
-            fitted = image.size().scaled(self.size(), Qt.AspectRatioMode.KeepAspectRatio)
-            target = QRect(0, 0, fitted.width(), fitted.height())
-            target.moveCenter(self.rect().center())
+        target = self._target()
+        if target is not None and self._image is not None:
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-            painter.drawImage(target, image)
+            painter.drawImage(target, self._image)
+            if self._pair is not None:
+                x = target.left() + round(self._split * target.width())
+                painter.setPen(QPen(QColor(DIVIDER_COLOR), DIVIDER_WIDTH))
+                painter.drawLine(x, target.top(), x, target.bottom())
         painter.end()
 
 
@@ -316,6 +397,9 @@ class MainWindow(QMainWindow):
             seed=self.seed_spin.value(),
             condition=self._condition(),
             advanced=self.advanced_edit.toPlainText(),
+            generations=self.generations_spin.value(),
+            signal=self.signal_combo.currentData(),
+            audio=self.audio_combo.currentData(),
         )
 
     def open_input(self, path: str) -> None:
@@ -399,12 +483,48 @@ class MainWindow(QMainWindow):
         self.reset_button = QPushButton("Reset to preset")
         self.reset_button.setObjectName("resetButton")
         self.reset_button.clicked.connect(self._reset_to_preset)
+
+        self.generations_spin = QSpinBox()
+        self.generations_spin.setObjectName("generationsSpin")
+        self.generations_spin.setRange(1, MAX_GENERATIONS)
+        self.generations_spin.valueChanged.connect(self._on_look_changed)
+        generations_label = QLabel("Generations")
+        for widget in (generations_label, self.generations_spin):
+            widget.setToolTip("How many times the tape is copied: each generation is a different deck and tape")
+        self.signal_combo = QComboBox()
+        self.signal_combo.setObjectName("signalCombo")
+        for text, value in zip(SIGNAL_LABELS, SIGNALS, strict=True):
+            self.signal_combo.addItem(text, value)
+        self.signal_combo.currentIndexChanged.connect(self._on_look_changed)
+        self.audio_combo = QComboBox()
+        self.audio_combo.setObjectName("audioCombo")
+        for text, value in zip(AUDIO_LABELS, AUDIO_MODES, strict=True):
+            self.audio_combo.addItem(text, value)
+        self.audio_combo.currentIndexChanged.connect(self._on_look_changed)
+
+        self.save_look_button = QPushButton("Save look...")
+        self.save_look_button.setObjectName("saveLookButton")
+        self.save_look_button.clicked.connect(self._browse_save_look)
+        self.load_look_button = QPushButton("Load look...")
+        self.load_look_button.setObjectName("loadLookButton")
+        self.load_look_button.clicked.connect(self._browse_load_look)
+        look_files = QHBoxLayout()
+        look_files.addWidget(self.save_look_button)
+        look_files.addWidget(self.load_look_button)
+
         grid.addWidget(QLabel("Preset"), 0, 0)
         grid.addWidget(self.preset_combo, 0, 1, 1, 2)
         grid.addWidget(QLabel("Seed"), 1, 0)
         grid.addWidget(self.seed_spin, 1, 1)
         grid.addWidget(self.random_seed_button, 1, 2)
-        grid.addWidget(self.reset_button, 2, 0, 1, 3)
+        grid.addWidget(generations_label, 2, 0)
+        grid.addWidget(self.generations_spin, 2, 1)
+        grid.addWidget(QLabel("Signal"), 3, 0)
+        grid.addWidget(self.signal_combo, 3, 1, 1, 2)
+        grid.addWidget(QLabel("Sound"), 4, 0)
+        grid.addWidget(self.audio_combo, 4, 1, 1, 2)
+        grid.addWidget(self.reset_button, 5, 0, 1, 3)
+        grid.addLayout(look_files, 6, 0, 1, 3)
         grid.setColumnStretch(1, 1)
         return box
 
@@ -583,14 +703,22 @@ class MainWindow(QMainWindow):
         self.original_button.setObjectName("originalButton")
         self.processed_button = QPushButton("Processed")
         self.processed_button.setObjectName("processedButton")
+        self.split_button = QPushButton("Split")
+        self.split_button.setObjectName("splitButton")
         modes = QButtonGroup(self)
         modes.setExclusive(True)
-        for button in (self.original_button, self.processed_button):
+        for button in (self.original_button, self.processed_button, self.split_button):
             button.setCheckable(True)
             modes.addButton(button)
         self.original_button.setChecked(True)
         self.original_button.clicked.connect(lambda: self._set_view_mode(MODE_ORIGINAL))
         self.processed_button.clicked.connect(lambda: self._set_view_mode(MODE_PROCESSED))
+        self.split_button.clicked.connect(lambda: self._set_view_mode(MODE_SPLIT))
+        self.save_frame_button = QPushButton("Save frame...")
+        self.save_frame_button.setObjectName("saveFrameButton")
+        self.save_frame_button.setEnabled(False)
+        self.save_frame_button.clicked.connect(self._browse_save_frame)
+        self.preview.image_changed.connect(self._update_save_frame_button)
         self.play_button = QPushButton("Play")
         self.play_button.setObjectName("playButton")
         self.play_button.clicked.connect(self._toggle_play)
@@ -601,6 +729,8 @@ class MainWindow(QMainWindow):
         playback = QHBoxLayout()
         playback.addWidget(self.original_button)
         playback.addWidget(self.processed_button)
+        playback.addWidget(self.split_button)
+        playback.addWidget(self.save_frame_button)
         playback.addWidget(self.play_button)
         playback.addWidget(self.frame_slider, 1)
         playback.addWidget(self.frame_label)
@@ -717,6 +847,96 @@ class MainWindow(QMainWindow):
         # Without a preview there is nothing the settings could have changed since.
         self.stale_label.setVisible(stale and self.processed_frames is not None)
 
+    # ------------------------------------------------------------ look files
+
+    def _browse_save_look(self) -> None:
+        start = str(Path(self._info.path).parent) if self._info is not None else str(Path.home())
+        path, _ = QFileDialog.getSaveFileName(self, "Save look", start, LOOK_FILTER)
+        if path:
+            self.save_look(path if Path(path).suffix else path + LOOK_SUFFIX)
+
+    def _browse_load_look(self) -> None:
+        start = str(Path(self._info.path).parent) if self._info is not None else str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(self, "Load look", start, LOOK_FILTER)
+        if path:
+            self.load_look(path)
+
+    def save_look(self, path: str) -> None:
+        try:
+            text = backend.save_look(self.look())
+            Path(path).write_text(text, encoding="utf-8")
+        except GuiError as err:
+            self._set_status(str(err))
+        except OSError as err:
+            self._set_status(f"Cannot write {path}: {err}")
+        else:
+            self._set_status(f"Look saved to {path}")
+
+    def load_look(self, path: str) -> None:
+        try:
+            look = backend.load_look(Path(path).read_text(encoding="utf-8"))
+            self._check_loadable(look)
+        except GuiError as err:
+            self._set_status(str(err))
+            return
+        except (OSError, UnicodeDecodeError) as err:
+            self._set_status(f"Cannot read {path}: {err}")
+            return
+        # Choosing the preset loads its condition; the file's own values go on top of that.
+        self.preset_combo.blockSignals(True)
+        self.preset_combo.setCurrentIndex(self.preset_combo.findText(look.preset))
+        self.preset_combo.blockSignals(False)
+        self._load_preset()
+        self._apply_condition({**self._condition(), **look.condition})
+        self.seed_spin.setValue(look.seed)
+        self.generations_spin.setValue(look.generations)
+        self.signal_combo.setCurrentIndex(self.signal_combo.findData(look.signal))
+        self.audio_combo.setCurrentIndex(self.audio_combo.findData(look.audio))
+        self.advanced_edit.setPlainText(look.advanced)
+        self._set_stale(True)
+        self._set_status(f"Look loaded from {path}")
+
+    def _check_loadable(self, look: Look) -> None:
+        """Fail before anything is changed when the editors could not show the look."""
+        if self.preset_combo.findText(look.preset) < 0:
+            raise GuiError(f"Look file: unknown preset '{look.preset}'")
+        for spec in CONDITION_FIELDS:
+            if spec.key not in look.condition:
+                continue
+            value = look.condition[spec.key]
+            if spec.kind == "bool":
+                valid = isinstance(value, bool)
+            elif spec.kind == "choice":
+                valid = value in spec.choices
+            else:
+                valid = isinstance(value, (int, float)) and not isinstance(value, bool)
+            if not valid:
+                raise GuiError(f"Look file: '{spec.key}' has an unusable value")
+
+    # ------------------------------------------------------------ save frame
+
+    def _update_save_frame_button(self) -> None:
+        self.save_frame_button.setEnabled(self.preview.image() is not None)
+
+    def _browse_save_frame(self) -> None:
+        if self._info is not None:
+            source = Path(self._info.path)
+            start = str(source.with_name(f"{source.stem}_frame{FRAME_SUFFIX}"))
+        else:
+            start = str(Path.home())
+        path, _ = QFileDialog.getSaveFileName(self, "Save frame", start, FRAME_FILTER)
+        if path:
+            self.save_frame(path if Path(path).suffix else path + FRAME_SUFFIX)
+
+    def save_frame(self, path: str) -> None:
+        image = self.preview.image()
+        if image is None or image.isNull():
+            self._set_status("There is no frame to save.")
+        elif image.save(path, FRAME_FORMAT):
+            self._set_status(f"Frame saved to {path}")
+        else:
+            self._set_status(f"Cannot write {path}")
+
     # ------------------------------------------------------------ status line
 
     def _set_status(self, text: str, detail: str = "") -> None:
@@ -745,6 +965,8 @@ class MainWindow(QMainWindow):
         count = self._frame_count()
         self.original_button.setEnabled(ready)
         self.processed_button.setEnabled(self.processed_frames is not None)
+        self.split_button.setEnabled(self.processed_frames is not None)
+        self._update_save_frame_button()
         self.play_button.setEnabled(count > 1)
         self.frame_slider.setEnabled(count > 1)
 
@@ -863,11 +1085,12 @@ class MainWindow(QMainWindow):
         self.frame_slider.blockSignals(False)
 
     def _set_view_mode(self, mode: str) -> None:
-        if mode == MODE_PROCESSED and self.processed_frames is None:
+        if mode in (MODE_PROCESSED, MODE_SPLIT) and self.processed_frames is None:
             mode = MODE_ORIGINAL
         self._view_mode = mode
         self.original_button.setChecked(mode == MODE_ORIGINAL)
         self.processed_button.setChecked(mode == MODE_PROCESSED)
+        self.split_button.setChecked(mode == MODE_SPLIT)
         self._show_frame(self._frame_index)
 
     def _toggle_view(self) -> None:
@@ -876,12 +1099,20 @@ class MainWindow(QMainWindow):
         self._set_view_mode(MODE_ORIGINAL if self._view_mode == MODE_PROCESSED else MODE_PROCESSED)
 
     def _show_frame(self, index: int) -> None:
-        frames = self.processed_frames if self._view_mode == MODE_PROCESSED else self.original_frames
         count = self._frame_count()
-        if frames is None or count == 0:
+        if count == 0:
             return
         self._frame_index = max(0, min(index, count - 1))
-        self.preview.set_image(_image_from(frames, self._frame_index))
+        original, processed = self.original_frames, self.processed_frames
+        if self._view_mode == MODE_SPLIT and original is not None and processed is not None:
+            self.preview.set_split_images(
+                _image_from(original, self._frame_index), _image_from(processed, self._frame_index)
+            )
+        else:
+            frames = processed if self._view_mode == MODE_PROCESSED else original
+            if frames is None:
+                return
+            self.preview.set_image(_image_from(frames, self._frame_index))
         self._sync_frame_slider()
         self.frame_label.setText(f"{_clock(frame_time(self._frame_index))} / {_clock(frame_time(count))}")
 
@@ -990,7 +1221,7 @@ class MainWindow(QMainWindow):
             request = RunRequest(
                 input=info.path,
                 output=str(preview_path),
-                look=look,
+                look=replace(look, audio=PREVIEW_AUDIO),
                 start=plan.start,
                 duration=plan.duration,
                 size=plan.size,
