@@ -25,12 +25,26 @@ fn the_condition_selects_the_speed_and_a_speed_matched_head() {
 }
 
 #[test]
-fn a_slower_tape_is_noisier() {
+fn a_slower_tape_is_noisier_until_the_format_steps_in() {
     let flat: Vec<_> = (0..6).map(|_| flat_frame(110)).collect();
-    let noise = |s: &str| luma_noise(&Session::run(params("good", s, "", 3), &flat)[3]);
-    let (sp, lp, ep) = (noise("sp"), noise("lp"), noise("ep"));
-    assert!(sp < lp && lp < ep, "luma noise {sp:.2} < {lp:.2} < {ep:.2}");
-    assert!(ep > 1.15 * sp, "EP {ep:.2} should be clearly noisier than SP {sp:.2}");
+    let noise = |s: &str, stages: bool| {
+        let mut p = params("good", s, "", 3);
+        if !stages {
+            p.record.sub_emphasis = None;
+            p.deck.sub_deemphasis = None;
+        }
+        luma_noise(&Session::run(p, &flat)[3])
+    };
+    // the medium: a narrower track reads back more noise
+    let (sp, lp, ep) = (noise("sp", false), noise("lp", false), noise("ep", false));
+    assert!(sp < lp && lp < ep, "luma noise of the tape alone {sp:.2} < {lp:.2} < {ep:.2}");
+    assert!(ep > 1.15 * sp, "EP {ep:.2} should be clearly noisier than SP {sp:.2} without the format's stages");
+    // the format: the sub-emphasis of LP and EP (ST 32 table 4) takes high-frequency noise out of the slower
+    // tapes, and SP has no such stage, so with the stages a slower tape is no noisier than SP on a flat field
+    assert_eq!(noise("sp", true), sp, "SP has no stage to switch off");
+    let (lp_f, ep_f) = (noise("lp", true), noise("ep", true));
+    assert!(lp_f < lp && ep_f < ep, "the stages lower the noise: LP {lp_f:.2} against {lp:.2}, EP {ep_f:.2} against {ep:.2}");
+    assert!(lp_f <= 1.15 * sp && ep_f <= 1.15 * sp, "with the format's stages LP {lp_f:.2} and EP {ep_f:.2} sit at or below SP {sp:.2}");
 }
 
 #[test]
