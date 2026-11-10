@@ -302,7 +302,7 @@ fn a_stray_mains_field_makes_each_line_of_the_picture_shift_by_the_beams_displac
 }
 
 #[test]
-fn a_magnet_beside_the_screen_warps_the_picture_near_it_and_leaves_the_far_side_alone() {
+fn a_magnet_beside_the_screen_warps_the_picture_near_it_and_only_shifts_the_far_side() {
     let mut p = magnet(MagnetKind::Neodymium, 0.34, 0.16, 0.0);
     p.crt.magnet.angle_deg = 0.0; // on the right-hand side
     let k = 2;
@@ -322,7 +322,25 @@ fn a_magnet_beside_the_screen_warps_the_picture_near_it_and_leaves_the_far_side_
     };
     let near_side = diff(ACTIVE_W - 200, ACTIVE_W);
     let far_side = diff(0, 120);
-    assert!(near_side > 0.0 && far_side == 0.0 || near_side > 5.0 * far_side + 1.0e-9, "near {near_side}, far {far_side}");
+    // The magnet sits 17 cm from the neck, where a neodymium disc still gives about 46 uT (the earth's field), so the
+    // whole raster moves a little (0.8 to 1.3 mm across the picture) and the far side is not untouched: it is shifted.
+    // What the magnet next to the screen adds is a warp, and the picture is damaged more on its side.
+    assert!(far_side > 0.0 && near_side > 1.25 * far_side, "near {near_side}, far {far_side}");
+    // the warp: the displacement changes across the near side (0.95 mm to 3.8 mm) several times more than across the
+    // far side, where it is a nearly rigid shift (1.3 mm to 0.8 mm)
+    let spread = |xs: [f64; 9]| -> f64 {
+        let d: Vec<[f64; 2]> = xs.iter().map(|&x| displacement_m(&p, x, 0.0, 0.0)).collect();
+        let mut s = 0.0f64;
+        for a in &d {
+            for b in &d {
+                s = s.max(((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt());
+            }
+        }
+        s
+    };
+    let line = |from: f64, to: f64| -> [f64; 9] { std::array::from_fn(|i| from + (to - from) * i as f64 / 8.0) };
+    let (warp_near, warp_far) = (spread(line(0.05, 0.135)), spread(line(-0.135, -0.05)));
+    assert!(warp_far > 0.0 && warp_near > 4.0 * warp_far, "warp near {warp_near}, far {warp_far}");
     // the same magnet on the left puts the damage on the left
     let mut q = p.clone();
     q.crt.magnet.angle_deg = 180.0;

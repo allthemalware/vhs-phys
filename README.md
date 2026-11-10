@@ -52,8 +52,10 @@ vhsphys run in.mp4 out.mp4 --preset worn --config my_tape.toml
 
 ## Condition presets
 
-`pristine`, `good`, `worn`, `bad`, `ruined`, and single-fault presets
-`dry-caps`, `dirty-heads`, `mistracked`, `stretched`, `humid-attic`. A preset is a
+`pristine`, `good`, `worn`, `bad`, `ruined`, single-fault presets
+`dry-caps`, `dirty-heads`, `mistracked`, `stretched`, `humid-attic`, and presets that each
+isolate one outside influence (see [Interference](#interference-the-outside-world)):
+`phone-buzz`, `ham-radio`, `am-station`, `ground-loop`, `magnet-screen`, `magnet-head`, `dimmer`. A preset is a
 `Condition` (tape age and storage, head wear/clog, deck age and temperature,
 humidity, mains, tracking, tension ...) that the laws in
 `crates/vhsphys-core/src/condition.rs` turn into physical parameters:
@@ -112,6 +114,41 @@ right:
 * **Rendering**: writes to a hidden temporary file alongside the target and renames
   it on completion to avoid overwriting or corrupting existing files. Default
   output is `<input name>_vhs.mp4`.
+
+### The schematic
+
+The same controls can be shown as a phosphor-green electrical drawing: the **Schematic** button of the
+mode bar replaces the settings column by a drawing of the deck, the cassette and the TV, every control
+a labelled line with its value (drag a value, scroll over it, or click it and type). A second page,
+**Outside**, draws the things that are not part of the circuit (see below). Both pages show the live
+preview on the TV and edit the same settings as the panels, so the two views can never disagree.
+`python -m vhsgui --schematic [--page outside] [--screenshot out.png] [input-video]`. The drawing
+is data (`python/vhsgui/schematic/*/layout.json`, `glyphs.json`, format in `docs/design/FORMAT.md`,
+design notes in `docs/design/SCHEMATIC.md`).
+
+## Interference: the outside world
+
+Things that are not in the circuit but act on it: a phone near the deck, a radio transmitter, the mains
+(frequency, ground loop, stray field, a dimmer) and a magnet near the head drum or the picture tube.
+Each is a *field at the equipment* (a dipole field, a free-space wave, the mains waveform) that a *coupling*
+turns into a voltage at one node of the circuit (loop pick-up, rectification, induction, the Lorentz force);
+the existing chain then reacts to it. Nothing is painted over the picture.
+
+* a GSM phone is a 577 us burst every 4.615 ms; the amplifiers rectify it, so the sound buzzes at 217 Hz
+  and the picture carries a band 9 lines tall every 72.6 lines; the buzz falls as the square of the distance;
+* a radio carrier is induced in the head leads (a loop of 5 cm^2) and goes through the FM discriminator;
+  near the luma carrier it makes a diagonal herringbone of fixed spatial frequency, near the colour-under
+  carrier coloured stripes;
+* the mains is a function of absolute time against the video's own 59.94 Hz, so hum bars crawl at the
+  difference (a 50 Hz mains against NTSC video scrolls them fast); a ground loop modulates the video gain;
+  a dimmer rings after every firing;
+* a magnet saturates the head core and erases the tape (signal drops, the noise does not: snow); at the tube
+  it bends the beam by the Lorentz force along its path (the raster shifts, warps, brightens where the lines
+  crowd, and changes colour when a beam lands on the next phosphor stripe).
+
+Conditions (`phone_mode`, `radio_mod`, `ground_loop_mv`, `crt_magnet`, ... ) are off by default and in every
+older preset; with everything off the output is bit-identical to a build without the module. The derivations,
+the equations and the list of estimated coefficients are in `docs/INTERFERENCE.md`.
 
 ## Tape speeds, generations, composite and sound
 
@@ -204,7 +241,7 @@ crates/vhsphys-core   physics library (record, tape, head, mech, electronics, de
 crates/vhsphys-cli    `vhsphys` command line tool (ffmpeg pipes)
 python/vhsgui         desktop front end (PySide6) for the command line tool
 python/vhslab         reference physics, validation report, tuning and plotting tools
-docs/                 RESEARCH, ARCHITECTURE, PLUGIN, PERFORMANCE, COMPARISON, TAPE_SPEEDS, COMPOSITE, AUDIO, images
+docs/                 RESEARCH, ARCHITECTURE, PLUGIN, PERFORMANCE, COMPARISON, TAPE_SPEEDS, COMPOSITE, AUDIO, INTERFERENCE, design/, images
 scripts/gallery.sh    regenerate the gallery images
 scripts/features.sh   regenerate the feature images
 ```
