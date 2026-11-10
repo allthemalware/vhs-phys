@@ -34,7 +34,7 @@ vhsphys run in.mkv out.mp4 --preset good --seed 12 --start 30 -t 10 --size 1280x
 vhsphys run in.mp4 still.png --preset bad --frames 40
 
 # inspect / edit every parameter of a preset
-vhsphys show worn --condition           # only the high-level knobs
+vhsphys show worn --condition           # only the high-level knobs, as a config file ready for --config
 vhsphys show worn > my_tape.toml        # edit, then:
 vhsphys run in.mp4 out.mp4 --preset worn --config my_tape.toml
 ```
@@ -212,7 +212,7 @@ Architecture and numerical decisions: `docs/ARCHITECTURE.md`.
 
 ## Validation
 
-* 154 Rust tests (`cargo test --release`): carrier frequencies match the VHS
+* 156 Rust tests (`cargo test --release`): carrier frequencies match the VHS
   standard, the discriminator is exact, the chroma duty-cycle recording gain
   matches theory, spacing loss follows 54.6 dB per wavelength, the azimuth
   filter follows the sinc law, adjacent tracks are line aligned, creases sit at a

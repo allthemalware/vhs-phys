@@ -382,7 +382,8 @@ fn main() -> Result<()> {
             if condition {
                 let c = Condition::preset(&preset)
                     .with_context(|| format!("unknown preset '{preset}' (try: {})", Condition::preset_names().join(", ")))?;
-                print!("{}", toml::to_string_pretty(&c)?);
+                // under its table header, so the output is a config file as it stands
+                print!("[condition]\n{}", toml::to_string_pretty(&c)?);
             } else {
                 let p = config::build(Some(&preset), "", seed).map_err(anyhow::Error::msg)?;
                 print!("{}", toml::to_string_pretty(&p)?);

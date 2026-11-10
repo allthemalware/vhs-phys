@@ -148,9 +148,14 @@ def preset_condition(binary: Path | str, name: str) -> dict[str, float | bool]:
     """The `[condition]` table of a preset."""
     text = _run_tool([str(binary), "show", name, "--condition"])
     try:
-        return tomllib.loads(text)
+        doc = tomllib.loads(text)
     except tomllib.TOMLDecodeError as err:
         raise GuiError(f"Unreadable condition of preset '{name}': {err}") from None
+    # the tool prints the table under its `[condition]` header; older builds printed the keys bare
+    table = doc.get("condition", doc)
+    if not isinstance(table, dict):
+        raise GuiError(f"Unreadable condition of preset '{name}': no [condition] table")
+    return table
 
 
 # ---------------------------------------------------------------- probing media
