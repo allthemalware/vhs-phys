@@ -390,6 +390,9 @@ impl Condition {
 
         // ---------------- recording deck (what was written to tape) ----------------
         let r = &mut p.record;
+        // the format's LP/EP rules: the channel-1 carrier sits fH/2 above channel 2's; the burst is not doubled at LP
+        r.carrier_interleave_hz = self.tape_speed.carrier_interleave_hz();
+        r.burst_boost = if self.tape_speed.burst_doubled() { 2.0 } else { 1.0 };
         r.emph_tau *= 1.0 + rec_r_drift + 0.01 * rec_af * g();
         r.emph_ratio *= 1.0 + 0.5 * rec_r_drift * g();
         r.chroma_level *= 1.0 + 0.10 * rec_af * g();

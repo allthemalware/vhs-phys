@@ -41,6 +41,13 @@ little shallower and the head path advances less across the tape between two fie
    more crosstalk gets through. The loss of a fixed fraction of a track shrinks with the
    width, which is why the chroma of LP and EP degrades faster.
 
+## Format details at LP and EP
+
+SMPTE ST 32 sets two extra record rules for the slow speeds (`format.rs`, wired in `condition.rs` and `record.rs`):
+
+- **Carrier interleave (clause 4.3.1.2):** at LP and EP (`TapeSpeed::carrier_interleave_hz`), the FM carrier recorded by the channel-1 video head sits `fH / 2` higher than the channel-2 head's (`RecordParams.carrier_interleave_hz`). This makes adjacent-track crosstalk beat at odd multiples of `fH / 2`, so it alternates in polarity from line to line and the display's 1 H comb cancels it.
+- **Colour burst amplitude (clause 4.3.1.3, with 4.3.3 for EP):** the colour burst is doubled before recording at SP (clause 3.9.2.1.3) and, through clause 4.3.3, at EP (`record.burst_boost = 2.0`), whereas clause 4.3.1.3 states that the burst amplitude is not doubled in the LP mode (`TapeSpeed::burst_doubled`, `record.burst_boost = 1.0`). The undoubled burst gives the LP decoder half the burst amplitude to lock on, so colour lock on a worn LP tape is weaker.
+
 ## Standard numbers and estimates
 
 Standard: tape speeds, track pitches 58 / 28.9 / 19.3 um, the track angle at SP, the

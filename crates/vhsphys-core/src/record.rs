@@ -135,12 +135,14 @@ impl VideoSource for FrameStore {
 }
 
 /// Luma FM modulation of an RF-rate luma signal (IRE) -> carrier in [-1, 1].
-pub fn fm_modulate(y_rf: &[f32], p: &RecordParams, out: &mut Vec<f32>) {
+/// `offset_hz` is how far this head's carrier sits above the format's, Hz
+/// (the channel-1 head's share of the LP/EP carrier interleave).
+pub fn fm_modulate(y_rf: &[f32], p: &RecordParams, offset_hz: f64, out: &mut Vec<f32>) {
     out.clear();
     out.reserve(y_rf.len());
     let mut phase = 0.0f64;
     let k = 2.0 * PI / FS_RF;
-    let f0 = F_SYNC_TIP * (1.0 + p.fm_freq_error);
+    let f0 = (F_SYNC_TIP + offset_hz) * (1.0 + p.fm_freq_error);
     for &y in y_rf {
         let f = f0 + (y as f64 + 40.0) * HZ_PER_IRE * p.fm_deviation_scale;
         phase += k * f;
@@ -198,7 +200,9 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
 
     // ---- FM carrier, record high-pass ----
     let mut fm = Vec::new();
-    fm_modulate(&y_rf, p, &mut fm);
+    // the channel-1 head (parity 1) records its carrier fH/2 above the channel-2 head's at LP and EP
+    let offset_hz = if parity == 1 { p.carrier_interleave_hz } else { 0.0 };
+    fm_modulate(&y_rf, p, offset_hz, &mut fm);
     let mut hpf = butter_hp(2, p.fm_hpf_hz, FS_RF);
     hpf.process(&mut fm);
 
