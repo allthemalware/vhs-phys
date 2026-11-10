@@ -25,6 +25,8 @@ against real captures by another project, **[svc]** service literature,
 | S-VHS | 5.4-7.0 MHz, deviation 1.6 MHz | Sencore [svc] |
 | Luma pre-emphasis | first-order shelf, T = C*Rb = 1.3 us, Rb/Ra = 4 (gain 1+4 = 5 = 14 dB) | ST 32 [std]; vhs-decode [meas] |
 | Clip levels (after emphasis) | white 160% of sync-tip-to-white span (155-200% allowed), dark -40% (-50..-30%) | ST 32 [std] |
+| Sub-preemphasis (LP, EP only) | level-dependent HF boost before the main emphasis, undone after the main de-emphasis; response of a sine at 50 kHz..3 MHz for inputs of 0/-10/-14/-20 dB of the sync-to-white span, e.g. LP at 1 MHz 0.7/2.2/3.8/5.0 dB, EP peaks near 1 MHz (2.0..7.0 dB) and falls by 3 MHz; SP has none | ST 32 4.3.1.1.1, table 4 [std]; network form (high-pass, gain, diode limiter) [est], figures fitted to the table |
+| LP/EP carrier interleave and burst | channel-1 head's FM carrier fH/2 above channel 2's at LP and EP; burst not doubled at LP (doubled at SP and, by 4.3.3, EP) | ST 32 4.3.1.2, 4.3.1.3 [std] |
 | => FM extremes | 3.0 MHz (dark clip) .. 5.0 MHz (white clip) | [derived] |
 | FM high-pass before recording | >17 dB down at 629 kHz, >10 dB down at 1 MHz | ST 32 fig. 10 [std] |
 | Colour-under carrier | 40 x fH = 629.371 kHz (NTSC); 40 fH + 1.953 kHz = 626.953 kHz (PAL) | ST 32 [std]; vhs-decode [meas] |

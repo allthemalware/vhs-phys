@@ -46,6 +46,10 @@ pub struct RecordParams {
     /// Colour-under amplitude relative to the FM carrier for |C| = 100 IRE.
     pub chroma_level: f64,
     pub burst_boost: f32,
+    /// The sub-preemphasis of the LP and EP modes, before the main emphasis; none at SP.
+    pub sub_emphasis: Option<crate::emphasis::SubEmphasisParams>,
+    /// How far the channel-1 head's carrier sits above the channel-2 head's, Hz (fH/2 at LP and EP).
+    pub carrier_interleave_hz: f64,
     /// Head current threshold (relative to FM amplitude 1) = tape coercivity.
     pub relay_threshold: f64,
     /// Asymmetry of the FM drive (DC offset of the record current): a failing
@@ -67,6 +71,8 @@ impl Default for RecordParams {
             chroma_lpf_hz: 0.65e6,
             chroma_level: 0.30,
             burst_boost: 2.0,
+            sub_emphasis: None,
+            carrier_interleave_hz: 0.0,
             relay_threshold: 0.30,
             drive_offset: 0.0,
         }

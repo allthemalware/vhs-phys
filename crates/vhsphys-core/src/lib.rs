@@ -15,6 +15,7 @@ pub mod consts;
 pub mod crt;
 pub mod decode;
 pub mod dsp;
+pub mod emphasis;
 pub mod electronics;
 pub mod format;
 pub mod head;

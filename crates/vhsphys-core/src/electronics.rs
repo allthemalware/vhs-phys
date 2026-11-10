@@ -54,6 +54,8 @@ pub struct DeckParams {
     pub luma_lpf_transition_hz: f64,
     /// Scale factors on the de-emphasis network's time constant and ratio.
     pub deemph_tau_scale: f64,
+    /// The sub-deemphasis of the LP and EP modes, after the main de-emphasis; none at SP.
+    pub sub_deemphasis: Option<crate::emphasis::SubEmphasisParams>,
     pub deemph_ratio_scale: f64,
     /// Aperture corrector ("sharpness"): centre, Q, gain dB.
     pub sharp_freq: f64,
@@ -110,6 +112,7 @@ impl Default for DeckParams {
             luma_lpf_hz: 3.0e6,
             luma_lpf_transition_hz: 2.0e6,
             deemph_tau_scale: 1.0,
+            sub_deemphasis: None,
             deemph_ratio_scale: 1.0,
             sharp_freq: 2.2e6,
             sharp_q: 0.7,
