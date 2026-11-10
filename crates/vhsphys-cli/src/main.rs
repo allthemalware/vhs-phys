@@ -366,12 +366,13 @@ fn main() -> Result<()> {
         Cmd::Run(a) => run(a),
         Cmd::Presets => {
             println!("Condition presets (use with --preset):\n");
+            let width = Condition::preset_names().iter().map(|n| n.len()).max().unwrap_or(0);
             for n in Condition::preset_names() {
                 let c = Condition::preset(n).unwrap();
                 let outside = outside_description(&c);
                 let outside = if outside.is_empty() { outside } else { format!("  outside: {outside}") };
                 println!(
-                    "  {n:12}  tape {:>2.0} y (quality {:.2}, stretch {:.2})  heads wear {:.2} clog {:.2}  deck {:>2.0} y at {:.0} C  tracking {:.0} um{outside}",
+                    "  {n:width$}  tape {:>2.0} y (quality {:.2}, stretch {:.2})  heads wear {:.2} clog {:.2}  deck {:>2.0} y at {:.0} C  tracking {:.0} um{outside}",
                     c.tape_age_years, c.tape_quality, c.tape_stretch, c.head_wear, c.head_clog, c.deck_age_years, c.deck_temp_c, c.tracking_error_um
                 );
             }

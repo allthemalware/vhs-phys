@@ -37,6 +37,9 @@ the time axis for everything, so any process that is a function of global time
 | `format` | tape speed geometry: SP/LP/EP track pitch, angle, advance |
 | `composite` | Y/C sum and separation, notch and combs |
 | `audio` | the linear audio path (`audio.rs`): transport delay, loss, hiss, hum, dropouts |
+| `interference_params` | the outside world as parameters: phone, radio, mains, magnets, couplings (`[est]`) |
+| `interference` | fields of the outside sources and what each adds at its circuit node, as functions of absolute time |
+| `crt` | the picture tube: Lorentz force on the beam integrated along its path, landing shift, brightness, stripe purity |
 
 ## Data flow per field
 
@@ -49,6 +52,21 @@ Session::process(batch)
                           run the deck electronics (state warmed up on 2 lines either side)
   4 decode_frame(k)      parallel over frames   sync/AFC/colour decode of fields 2k, 2k+1
 ```
+
+The outside world enters at the circuit nodes where it physically arrives (all functions of the global sample index,
+so a split buffer or a render from any start gives the same result; with every source off nothing is called):
+
+```
+render_rf    tape signal x head_signal_gain (magnet at the drum)   -> head_front_end (noise)
+             + rf_pickup_add (radio carrier in the head leads, dimmer burst)
+decode       after the clamp: (y - clamp) (1 + video_gain) + video_add_ire (ground loop, rectified phone and AM, dimmer ring)
+             after decode_ideal: crt::apply (magnet at the tube, stray mains field)
+audio        pre-equaliser: audio_add pre_eq (rectified phone and AM, stray-field induction), tape gain (magnet)
+             post-equaliser: audio_add post_eq (ground loop, dimmer click)
+```
+
+Calibration aligns the deck with every source off (on the bench), so a source is seen by the AGC and the slicers as it
+would be in use, not absorbed into the alignment.
 
 Frame `k` needs fields `2k..2k+2` (the last visible lines of a field are read by
 the next head) and therefore video frames `k-2 .. k+2`: the output lags the input
@@ -101,6 +119,9 @@ The desktop front end lives in `python/vhsgui`:
 * `backend.py`: non-Qt operations including tool discovery, probing, config text generation, command lines, and background jobs.
 * `app.py`: the main application window and preview player.
 * `__main__.py`: CLI entry point and screenshot support.
+* `schematic/`: the phosphor schematic, a QPainter view drawn from data (`layout.json` and `glyphs.json` per page: the circuit, and the
+  outside world in `schematic/outside/`). The format is in `docs/design/FORMAT.md`; the window mirrors every editor of a page and the
+  panels through one path, so the views cannot disagree.
 
 To preview an excerpt, the backend runs the CLI with `--start` beginning a few frames early (`LEAD_FRAMES` = 3). The first frames of a fresh render lack the neighbouring frames the model looks at, so they are dropped. Because the tape is a function of the absolute frame index, the remaining frames match a render of the whole file (about 38-41 dB PSNR against it, codec noise only; a one-frame offset gives about 17 dB).
 
