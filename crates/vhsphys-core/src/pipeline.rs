@@ -17,6 +17,7 @@ use crate::decode::{decode_frame, demod_chroma, DecodeParams, StreamView};
 use crate::electronics::{process_segment, DeckParams};
 use crate::format::TapeSpeed;
 use crate::head::*;
+use crate::interference::{head_signal_gain, rf_pickup_add};
 use crate::interference_params::InterferenceParams;
 use crate::mech::{Mech, MechParams};
 use crate::record::*;
@@ -29,6 +30,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 const STREAM_HEAD: u64 = 1;
+
+/// Carrier frequency at which the head's nominal output is taken (the same reference as in `head_front_end`).
+const NOMINAL_CARRIER_HZ: f64 = 3.9e6;
 
 /// Input frames a session must have seen past an output frame before it can decode it:
 /// the frame itself and the two after it (tracks and segments reach into the next frames).
@@ -184,8 +188,24 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64) -> Ve
             *a += *b;
         }
     }
+    let itf = &p.interference;
+    if itf.head_magnet_on() {
+        // A magnet at the drum saturates the head core and erases part of the track: the tape
+        // signal falls, the amplifier noise does not, so this goes in before the front end. The
+        // gain changes on the time scale of the approach (seconds): one value per track.
+        let t_mid = (g0 + (len / 2) as i64) as f64 / FS_RF;
+        let gain = head_signal_gain(itf, t_mid) as f32;
+        for v in buf.iter_mut() {
+            *v *= gain;
+        }
+    }
     let mut rng = Rng::new(p.seed, STREAM_HEAD, n);
     head_front_end(&mut buf, hp, &mut rng);
+    if itf.rf_on() {
+        // What the head leads pick up is compared with the nominal, unworn head signal: a worn
+        // head sees relatively more of it.
+        rf_pickup_add(itf, g0, &mut buf, nominal_fm_amplitude(NOMINAL_CARRIER_HZ, hp.h0_samples()));
+    }
     buf
 }
 
@@ -246,6 +266,8 @@ pub fn calibrate(p: &Params) -> Calibration {
     clean.tape = TapeParams::default();
     clean.mech = MechParams::none();
     clean.tracking = TrackingParams::default();
+    // the alignment is done on the bench, away from phones, transmitters and magnets
+    clean.interference = InterferenceParams::default();
     let cx = Ctx::new(clean.clone());
     let black = Arc::new(encode_frame(&Frame::new(ACTIVE_W, ACTIVE_H)));
     let src = WindowSource { first: -2, frames: vec![black.clone(); 8], blank: Baseband::blank() };
@@ -432,7 +454,7 @@ impl Session {
                 let luma: Vec<f32> = parts.iter().flat_map(|s| s.luma.iter().copied()).collect();
                 let cu: Vec<f32> = parts.iter().flat_map(|s| s.cunder.iter().copied()).collect();
                 let view = StreamView { bb0: parts[0].bb_start, luma: &luma, cunder: &cu };
-                decode_frame(k, &view, &p.decode, &p.composite)
+                decode_frame(k, &view, &p.decode, &p.composite, &p.interference)
             })
             .collect();
 

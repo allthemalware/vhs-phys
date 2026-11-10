@@ -15,7 +15,10 @@
 use serde::{Deserialize, Serialize};
 use crate::composite::{self, CompositeParams};
 use crate::consts::*;
+use crate::crt;
 use crate::dsp::*;
+use crate::interference::{video_add_ire, video_gain};
+use crate::interference_params::InterferenceParams;
 use crate::record::line_rotation;
 use crate::video::{decode_ideal, Baseband, Frame};
 use std::f64::consts::PI;
@@ -160,18 +163,36 @@ pub(crate) fn demod_chroma(view: &StreamView, start: i64, len: usize, p: &Decode
 }
 
 /// Decode frame `k` from the deck output to RGB. With `composite.enabled` the decoded
-/// luma and chroma first pass through a composite connection to the TV.
-pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams, composite: &CompositeParams) -> Frame {
-    let mut bb = decode_planes(k, view, p);
+/// luma and chroma first pass through a composite connection to the TV. `itf` is the
+/// outside world: what it adds in the TV's video stages and what it does to the picture tube.
+pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams, composite: &CompositeParams, itf: &InterferenceParams) -> Frame {
+    let mut bb = decode_planes(k, view, p, itf);
     if composite.enabled {
         composite::roundtrip(&mut bb, k, composite);
     }
-    decode_ideal(&bb)
+    let mut frame = decode_ideal(&bb);
+    // nothing acts on the tube without a magnet or a stray field
+    if itf.crt_on() {
+        crt::apply(&mut frame, k, itf);
+    }
+    frame
+}
+
+/// What the outside world does to one luma sample after the TV's clamp: a ground loop moves
+/// the bias of the video stages (black stays, whites move) and the pulses, the hum that the
+/// clamp leaves and the rings add on top. `pos` is the baseband position of the pixel; the
+/// deck's RF time axis is `OS` times finer.
+#[inline]
+fn outside_luma(itf: &InterferenceParams, y: f32, pos: f64) -> f32 {
+    let g = (pos * OS as f64).round() as i64;
+    y * (1.0 + video_gain(itf, g)) + video_add_ire(itf, g)
 }
 
 /// Luma and chroma of frame `k` as the deck delivers them, placed on the nominal raster
 /// (the active picture of each line, timed by the AFC); the rest of the frame is blank.
-pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams) -> Baseband {
+/// `itf` adds to the luma what reaches the TV's video stages (nothing while `!itf.video_on()`).
+pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &InterferenceParams) -> Baseband {
+    let outside = itf.video_on();
     let frame0 = k * FRAME_BB as i64;
     let (cs, ce) = (frame0 + 20 * BB_PER_LINE as i64, frame0 + 525 * BB_PER_LINE as i64);
     assert!(view.bb0 <= cs - 2000 && view.end() >= ce, "stream view does not cover frame {k}");
@@ -239,7 +260,11 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams) -> Baseband {
             let mut cl = Vec::with_capacity(ACTIVE_W);
             for x in 0..ACTIVE_W {
                 let pos = base + x as f64;
-                yl.push(sample_cubic(view.luma, pos - view.bb0 as f64) - off);
+                let mut y = sample_cubic(view.luma, pos - view.bb0 as f64) - off;
+                if outside {
+                    y = outside_luma(itf, y, pos);
+                }
+                yl.push(y);
                 if killed {
                     cl.push([0.0, 0.0]);
                 } else {

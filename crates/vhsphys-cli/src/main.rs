@@ -14,8 +14,81 @@ use std::time::Instant;
 use vhsphys_core::condition::Condition;
 use vhsphys_core::config;
 use vhsphys_core::consts::{ACTIVE_H, ACTIVE_W};
+use vhsphys_core::interference_params::{MagnetKind, PhoneMode, RadioMod};
 use vhsphys_core::pipeline::Chain;
 use vhsphys_core::video::{decode_ideal, encode_frame, Frame};
+
+/// Mains frequency the preset listing takes for granted; another one is worth a word.
+const NOMINAL_MAINS_HZ: f64 = 60.0;
+
+/// A number as a person would write it: 6, 59.4, 0.9 (no trailing zeros).
+fn plain(x: f64) -> String {
+    let s = format!("{x:.2}");
+    s.trim_end_matches('0').trim_end_matches('.').to_string()
+}
+
+fn phone_name(m: PhoneMode) -> &'static str {
+    match m {
+        PhoneMode::Off => "no",
+        PhoneMode::Gsm => "gsm",
+        PhoneMode::Gprs => "gprs",
+        PhoneMode::Lte => "lte",
+    }
+}
+
+fn radio_name(m: RadioMod) -> &'static str {
+    match m {
+        RadioMod::Off => "no",
+        RadioMod::Am => "am",
+        RadioMod::Cw => "cw",
+        RadioMod::Ssb => "ssb",
+    }
+}
+
+fn magnet_name(k: MagnetKind) -> &'static str {
+    match k {
+        MagnetKind::Absent => "no",
+        MagnetKind::Fridge => "fridge",
+        MagnetKind::Neodymium => "neodymium",
+        MagnetKind::Speaker => "speaker",
+    }
+}
+
+/// What a preset has switched on outside the circuit, in plain words; empty when nothing is.
+/// The on/off decisions are those of the parameters themselves, the figures those of the condition.
+fn outside_description(c: &Condition) -> String {
+    let itf = c.to_params(1).interference;
+    if itf.is_off() {
+        return String::new();
+    }
+    let mut parts = Vec::new();
+    if itf.phone_on() {
+        parts.push(format!("{} phone at {} cm", phone_name(c.phone_mode), plain(c.phone_distance_cm)));
+    }
+    if itf.radio_on() {
+        parts.push(format!("{} radio at {} MHz, {} V/m", radio_name(c.radio_mod), plain(c.radio_freq_mhz), plain(c.radio_field_vpm)));
+    }
+    if itf.ground_on() {
+        parts.push(format!("ground loop {} mV", plain(c.ground_loop_mv)));
+    }
+    if itf.stray_on() {
+        parts.push(format!("stray field {} uT", plain(c.stray_field_ut)));
+    }
+    if itf.dimmer_on() {
+        parts.push(format!("dimmer firing at {} degrees", plain(c.dimmer_angle_deg)));
+    }
+    if itf.crt_magnet_on() {
+        parts.push(format!("{} magnet at the tube", magnet_name(c.crt_magnet)));
+    }
+    if itf.head_magnet_on() {
+        parts.push(format!("{} magnet at the head, {} cm", magnet_name(c.head_magnet), plain(c.head_magnet_cm)));
+    }
+    let on_the_mains = itf.ground_on() || itf.stray_on() || itf.dimmer_on();
+    if on_the_mains && c.mains_hz != NOMINAL_MAINS_HZ {
+        parts.push(format!("mains {} Hz", plain(c.mains_hz)));
+    }
+    parts.join(", ")
+}
 
 #[derive(Parser)]
 #[command(name = "vhsphys", version, about = "Physical model of VHS record/playback, tape wear and deck faults")]
@@ -295,8 +368,10 @@ fn main() -> Result<()> {
             println!("Condition presets (use with --preset):\n");
             for n in Condition::preset_names() {
                 let c = Condition::preset(n).unwrap();
+                let outside = outside_description(&c);
+                let outside = if outside.is_empty() { outside } else { format!("  outside: {outside}") };
                 println!(
-                    "  {n:12}  tape {:>2.0} y (quality {:.2}, stretch {:.2})  heads wear {:.2} clog {:.2}  deck {:>2.0} y at {:.0} C  tracking {:.0} um",
+                    "  {n:12}  tape {:>2.0} y (quality {:.2}, stretch {:.2})  heads wear {:.2} clog {:.2}  deck {:>2.0} y at {:.0} C  tracking {:.0} um{outside}",
                     c.tape_age_years, c.tape_quality, c.tape_stretch, c.head_wear, c.head_clog, c.deck_age_years, c.deck_temp_c, c.tracking_error_um
                 );
             }

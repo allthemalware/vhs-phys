@@ -20,6 +20,8 @@
 
 use crate::dsp::{lagrange3, Biquad};
 use crate::head::HeadParams;
+use crate::interference::{audio_add, audio_gain};
+use crate::interference_params::InterferenceParams;
 use crate::mech::Mech;
 use crate::pipeline::Params;
 use crate::rng::Rng;
@@ -387,6 +389,8 @@ pub struct AudioProcessor {
     tape: Tape,
     loss: SpacingLoss,
     hum: Hum,
+    /// Fields and signals from outside the circuit that reach the audio path.
+    itf: InterferenceParams,
     chan: Vec<Chan>,
     /// Tape speed (m/s) and the tape position of programme time zero (um).
     speed: f64,
@@ -454,6 +458,7 @@ impl AudioProcessor {
             tape: Tape::new(p.tape.clone(), p.seed),
             loss,
             hum: Hum::new(p, rate),
+            itf: p.interference.clone(),
             chan,
             speed: v,
             pos_um: p.tape.position_m * 1e6,
@@ -598,6 +603,17 @@ impl AudioProcessor {
         let delays = self.transport_delay(n0, len);
         let mut hum = vec![0.0f64; len];
         self.hum.fill(n0, &mut hum);
+        // The outside world, once per block and the same for every channel: what enters at the
+        // head and is shaped by the equaliser like the hiss, what enters after the filters like
+        // the hum, and how much a magnet at the heads weakens the signal from the tape (that
+        // changes on the time scale of the approach, seconds: one value per block).
+        let mut pre_eq = vec![0.0f64; len];
+        let mut post_eq = vec![0.0f64; len];
+        let mut tape_gain = 1.0f64;
+        if self.itf.audio_on() {
+            audio_add(&self.itf, n0, self.rate, &mut pre_eq, &mut post_eq);
+            tape_gain = audio_gain(&self.itf, (n0 + (len / 2) as i64) as f64 / self.rate);
+        }
         let mut chans = std::mem::take(&mut self.chan);
         let (drive, bias) = (self.a.sat_drive.max(1e-3), self.bias);
         let mut rec = vec![0.0f32; len];
@@ -631,11 +647,12 @@ impl AudioProcessor {
             }
             let keep = buf.len() - 2 * FIR_HALF;
             st.hist_z.copy_from_slice(&buf[keep..]);
-            // 4. head response and playback equaliser; the hiss enters before the equaliser
+            // 4. head response and playback equaliser; the hiss and the pick-up at the head enter
+            //    before the equaliser, the hum and what enters after the filters follow it
             st.noise.fill(n0, &mut hiss);
             for i in 0..len {
-                let s = st.hp.tick(w[i] as f64) + st.shelf.tick(hiss[i] as f64 * self.sigma);
-                let y = st.lp.tick(s) + hum[i];
+                let s = st.hp.tick(w[i] as f64 * tape_gain) + st.shelf.tick(hiss[i] as f64 * self.sigma + pre_eq[i]);
+                let y = st.lp.tick(s) + hum[i] + post_eq[i];
                 out[i * ch + c] = y.clamp(-1.0, 1.0) as f32;
             }
         }
