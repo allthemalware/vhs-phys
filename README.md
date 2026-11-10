@@ -162,7 +162,7 @@ sound, the hum bars and the dimmer marks move from frame to frame, and the singl
 
 ### Tape speed
 
-Set in a config file (`[condition]` / `tape_speed = "lp"`; `--set` cannot reach the `[condition]` table) or with the window's "Tape speed" menu (`sp`, `lp`, `ep`). Track pitch is 58 / 28.9 / 19.3 um; the extra noise, crosstalk and tighter tracking tolerance of LP and EP follow from the narrower tracks (details in `docs/TAPE_SPEEDS.md`).
+Set in a config file (`[condition]` / `tape_speed = "lp"`; `--set` cannot reach the `[condition]` table) or with the window's "Tape speed" menu (`sp`, `lp`, `ep`). Track pitch is 58 / 28.9 / 19.3 um; the extra noise, crosstalk and tighter tracking tolerance of LP and EP follow from the narrower tracks. LP and EP also follow the format's own record rules: one head's FM carrier sits half a line frequency above the other's, so adjacent-track crosstalk alternates from line to line and the display's comb cancels it, and the colour burst is not doubled at LP (details in `docs/TAPE_SPEEDS.md`).
 
 ![source, SP, LP, EP with a 5 um tracking error](docs/img/features_speed_fractal.jpg)
 
