@@ -122,22 +122,14 @@ fn a_mains_off_nominal_makes_the_bars_crawl_up_or_down_the_picture() {
         p.interference.mains.ground_loop_mv = 500.0;
         p.interference.mains.freq_hz = mains;
         let frames = run(p, 14, 180);
-        // the phase of the pattern within each frame (time measured from the start of the frame)
+        // The phase of the pattern within each frame (time measured from the start of the frame). A frame holds about two
+        // cycles, not a whole number, and the mains has a third and a fifth harmonic, so a plain projection on one sine is
+        // biased by the harmonics (by up to 0.3 rad, differently in every frame): fit all three.
         (3..11)
             .map(|k| {
-                let (mut c, mut s, mut mean, mut n) = (0.0, 0.0, 0.0, 0.0);
-                for y in 40..440 {
-                    mean += row_mean(&frames[k], y);
-                    n += 1.0;
-                }
-                mean /= n;
-                for y in 40..440 {
-                    let t = t_row(k, y) - k as f64 * LINES as f64 / FH;
-                    let v = row_mean(&frames[k], y) - mean;
-                    c += v * (2.0 * PI * mains * t).cos();
-                    s += v * (2.0 * PI * mains * t).sin();
-                }
-                s.atan2(c)
+                let samples: Vec<(f64, f64)> =
+                    (40..440).map(|y| (t_row(k, y) - k as f64 * LINES as f64 / FH, row_mean(&frames[k], y))).collect();
+                mains_phase(&samples, mains)
             })
             .collect()
     };
@@ -148,7 +140,7 @@ fn a_mains_off_nominal_makes_the_bars_crawl_up_or_down_the_picture() {
         let want = wrap(-expect);
         for w in ph.windows(2) {
             let d = wrap(w[1] - w[0]);
-            assert!((wrap(d - want)).abs() < 0.12, "mains {mains}: moved {d:.3} rad per frame, expected {want:.3}");
+            assert!((wrap(d - want)).abs() < 0.06, "mains {mains}: moved {d:.3} rad per frame, expected {want:.3}");
         }
     }
     // the two directions are opposite
@@ -156,36 +148,103 @@ fn a_mains_off_nominal_makes_the_bars_crawl_up_or_down_the_picture() {
     assert!(wrap(a[1] - a[0]) * wrap(b[1] - b[0]) < 0.0);
 }
 
+/// Phase of the fundamental of a mains-shaped signal in `(t, v)` samples: the least-squares fit of a constant and the
+/// fundamental, third and fifth harmonics of `f`, solved by Gaussian elimination on the normal equations.
+fn mains_phase(samples: &[(f64, f64)], f: f64) -> f64 {
+    const N: usize = 7;
+    let basis = |t: f64| -> [f64; N] {
+        let w = 2.0 * PI * f * t;
+        [1.0, w.cos(), w.sin(), (3.0 * w).cos(), (3.0 * w).sin(), (5.0 * w).cos(), (5.0 * w).sin()]
+    };
+    let mut a = [[0.0f64; N + 1]; N];
+    for &(t, v) in samples {
+        let b = basis(t);
+        for i in 0..N {
+            for j in 0..N {
+                a[i][j] += b[i] * b[j];
+            }
+            a[i][N] += b[i] * v;
+        }
+    }
+    for col in 0..N {
+        let pivot = (col..N).max_by(|&i, &j| a[i][col].abs().total_cmp(&a[j][col].abs())).unwrap();
+        a.swap(col, pivot);
+        for row in 0..N {
+            if row != col {
+                let r = a[row][col] / a[col][col];
+                for j in col..=N {
+                    a[row][j] -= r * a[col][j];
+                }
+            }
+        }
+    }
+    let x: Vec<f64> = (0..N).map(|i| a[i][N] / a[i][i]).collect();
+    x[2].atan2(x[1])
+}
+
 #[test]
 fn a_dimmer_adds_pulses_to_the_picture_at_twice_the_mains_frequency() {
-    let mut p = pristine(1);
-    quiet(&mut p.interference);
-    p.interference.mains.dimmer_angle_deg = 90.0;
-    p.interference.mains.freq_hz = 60.0;
-    let frames = run(p, 14, 140);
-    // the rows hit by a ring are noisy: take the spread along each row as the signal
-    let mut samples = Vec::new();
-    for k in 3..11 {
-        for y in 40..440 {
-            let m = row_mean(&frames[k], y);
-            let var = (60..frames[k].w - 60).map(|x| (luma(&frames[k], x, y) - m).powi(2)).sum::<f64>() / (frames[k].w - 120) as f64;
-            samples.push((t_row(k, y), var.sqrt()));
-        }
-    }
-    let mean = samples.iter().map(|s| s.1).sum::<f64>() / samples.len() as f64;
-    let tone = |f: f64| {
-        let (mut c, mut s) = (0.0, 0.0);
-        for (t, v) in &samples {
-            c += (v - mean) * (2.0 * PI * f * t).cos();
-            s += (v - mean) * (2.0 * PI * f * t).sin();
-        }
-        (c * c + s * s).sqrt() / (samples.len() as f64 / 2.0)
+    // A dimmer fires once per half cycle; the step rings for some tens of microseconds, so each firing marks one or two
+    // lines. Against the same chain without the dimmer (same seed: the same noise) the marked lines must sit at the firing
+    // times, (n + angle / 180) / (2 f), and the ring must scale with the height of the step, sin(angle).
+    let frames_with = |angle: f64| {
+        let mut p = pristine(1);
+        quiet(&mut p.interference);
+        p.interference.mains.freq_hz = 60.0;
+        p.interference.mains.dimmer_angle_deg = angle;
+        run(p, 14, 140)
     };
-    let at_120 = tone(120.0);
-    assert!(at_120 > 0.3, "{at_120}");
-    for f in [60.0, 90.0, 150.0, 180.0] {
-        assert!(at_120 > 3.0 * tone(f), "{f} Hz: {} vs {at_120}", tone(f));
+    let clean = frames_with(0.0);
+    // the firings seen in frames 3..11, rows 40..440: (time of the first marked line, largest change in levels)
+    let events = |angle: f64| -> Vec<(f64, f64)> {
+        let frames = frames_with(angle);
+        let mut marked: Vec<(f64, f64)> = Vec::new();
+        for k in 3..11 {
+            for y in 40..440 {
+                let peak = (60..frames[k].w - 60).map(|x| (luma(&frames[k], x, y) - luma(&clean[k], x, y)).abs()).fold(0.0, f64::max);
+                if peak >= 2.0 {
+                    marked.push((t_row(k, y), peak));
+                }
+            }
+        }
+        marked.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // lines marked by the same firing are less than a millisecond apart; firings are 8.3 ms apart
+        let mut out: Vec<(f64, f64)> = Vec::new();
+        for (t, peak) in marked {
+            match out.last_mut() {
+                Some(last) if t - last.0 < 1.0e-3 => last.1 = last.1.max(peak),
+                _ => out.push((t, peak)),
+            }
+        }
+        out
+    };
+    // the firings that fall on a line of rows 40..440 in frames 3..11
+    let expected = |angle: f64| -> usize {
+        let visible = |line: usize| (41..=240).contains(&line) || (304..=503).contains(&line);
+        (0..2000)
+            .map(|n| (n as f64 + angle / 180.0) / 120.0)
+            .filter(|&t| {
+                let line = (t * FH).floor() as i64;
+                (3 * LINES as i64..11 * LINES as i64).contains(&line) && visible((line % LINES as i64) as usize)
+            })
+            .count()
+    };
+    let at_90 = events(90.0);
+    let want = expected(90.0);
+    assert!(want >= 15 && at_90.len() >= want * 8 / 10 && at_90.len() <= want, "{} firings seen, {want} expected", at_90.len());
+    for &(t, _) in &at_90 {
+        // the first marked line is the one in which the dimmer fired (it starts up to a line earlier), or the next one when
+        // it fired in the blanking at the end of a line
+        let cycles = t * 120.0 - 0.5;
+        let lines = (cycles - cycles.round()) * FH / 120.0;
+        assert!((-1.1..0.6).contains(&lines), "a ring {lines:.2} lines away from the firing time");
     }
+    // the step, and so the ring, is the mains voltage at the firing angle
+    let mean_peak = |e: &[(f64, f64)]| e.iter().map(|x| x.1).sum::<f64>() / e.len() as f64;
+    let at_30 = events(30.0);
+    assert!(at_30.len() >= expected(30.0) * 7 / 10, "{} firings seen at 30 degrees", at_30.len());
+    let ratio = mean_peak(&at_30) / mean_peak(&at_90);
+    assert!((0.35..0.68).contains(&ratio), "30 against 90 degrees: {ratio:.3}, sin 30 = 0.5");
 }
 
 // ----------------------------------------------------------------------------- the phone
@@ -323,8 +382,9 @@ fn a_magnet_near_the_head_dims_the_carrier_by_the_core_saturation_and_the_erasur
         s.finish();
         s.debug_field(10).carrier_level as f64
     };
+    // the rms of the head's signal at alignment: a carrier of about unit amplitude (rms 0.71) less the losses of the head
     let clean = carrier(MagnetKind::Absent, 0.05);
-    assert!((0.8..1.25).contains(&clean), "{clean}");
+    assert!((0.4..1.0).contains(&clean), "{clean}");
     let mut p = InterferenceParams::default();
     p.head_magnet = HeadMagnet { kind: MagnetKind::Neodymium, distance_m: 0.06, ..HeadMagnet::default() };
     let want = head_signal_gain(&p, 0.0);
