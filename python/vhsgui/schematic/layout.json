@@ -108,7 +108,7 @@
    "x": 704,
    "y": 40,
    "w": 200,
-   "h": 288,
+   "h": 244,
    "frame": "box",
    "caption": "FEEDS RIPPLE AND DRIFT"
   },
@@ -428,7 +428,7 @@
    "points": [
     [
      804,
-     328
+     284
     ],
     [
      804,
@@ -860,34 +860,6 @@
    "y": 230,
    "w": 188,
    "kind": "toggle"
-  },
-  {
-   "id": "mains_hz",
-   "block": "power",
-   "label": "MAINS",
-   "x": 710,
-   "y": 252,
-   "w": 188,
-   "kind": "slider",
-   "unit": "Hz",
-   "min": 50,
-   "max": 60,
-   "step": 10,
-   "decimals": 0
-  },
-  {
-   "id": "mains_sag",
-   "block": "power",
-   "label": "SAG",
-   "x": 710,
-   "y": 274,
-   "w": 188,
-   "kind": "slider",
-   "unit": "",
-   "min": 0,
-   "max": 0.2,
-   "step": 0.005,
-   "decimals": 3
   },
   {
    "id": "signal",

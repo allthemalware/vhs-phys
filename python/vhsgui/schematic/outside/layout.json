@@ -58,19 +58,19 @@
    "x": 20,
    "y": 40,
    "w": 270,
-   "h": 100,
+   "h": 214,
    "frame": "box",
-   "caption": "PLACEHOLDER"
+   "caption": "RECTIFIES 217 HZ GSM BURSTS"
   },
   {
    "id": "radio",
    "title": "RADIO",
    "x": 20,
-   "y": 156,
+   "y": 270,
    "w": 270,
-   "h": 122,
+   "h": 250,
    "frame": "box",
-   "caption": "PLACEHOLDER"
+   "caption": "BEATS RF INTO LUMA AND CHROMA"
   },
   {
    "id": "mains",
@@ -78,19 +78,19 @@
    "x": 310,
    "y": 40,
    "w": 270,
-   "h": 166,
+   "h": 280,
    "frame": "box",
-   "caption": "PLACEHOLDER"
+   "caption": "DRIFTS HUM BARS AND RINGS SUPPLY"
   },
   {
    "id": "coupling",
    "title": "SHIELDING",
    "x": 310,
-   "y": 222,
+   "y": 336,
    "w": 270,
-   "h": 100,
+   "h": 184,
    "frame": "box",
-   "caption": "PLACEHOLDER"
+   "caption": "ATTENUATES FIELDS, TIMES APPROACH"
   },
   {
    "id": "crt_magnet",
@@ -98,19 +98,19 @@
    "x": 600,
    "y": 40,
    "w": 270,
-   "h": 144,
+   "h": 258,
    "frame": "box",
-   "caption": "PLACEHOLDER"
+   "caption": "BENDS CRT BEAM BY LORENTZ FORCE"
   },
   {
    "id": "head_magnet",
    "title": "MAGNET AT THE HEAD",
    "x": 600,
-   "y": 200,
+   "y": 314,
    "w": 270,
-   "h": 100,
+   "h": 206,
    "frame": "box",
-   "caption": "PLACEHOLDER"
+   "caption": "SATURATES CORE AND ERASES TAPE"
   },
   {
    "id": "tv",
@@ -118,22 +118,153 @@
    "x": 890,
    "y": 40,
    "w": 270,
-   "h": 260,
+   "h": 360,
    "frame": "box",
    "caption": ""
   }
  ],
  "instances": [
   {
+   "glyph": "phone_gsm",
+   "x": 28,
+   "y": 70,
+   "scale": 1.0,
+   "block": "phone"
+  },
+  {
+   "glyph": "radio_rf",
+   "x": 28,
+   "y": 300,
+   "scale": 1.0,
+   "block": "radio"
+  },
+  {
+   "glyph": "mains_ground",
+   "x": 318,
+   "y": 70,
+   "scale": 1.0,
+   "block": "mains"
+  },
+  {
+   "glyph": "mains_dimmer",
+   "x": 448,
+   "y": 70,
+   "scale": 1.0,
+   "block": "mains"
+  },
+  {
+   "glyph": "shield_cage",
+   "x": 318,
+   "y": 366,
+   "scale": 1.0,
+   "block": "coupling"
+  },
+  {
+   "glyph": "crt_tube",
+   "x": 608,
+   "y": 70,
+   "scale": 1.0,
+   "block": "crt_magnet"
+  },
+  {
+   "glyph": "drum_magnet",
+   "x": 608,
+   "y": 344,
+   "scale": 1.0,
+   "block": "head_magnet"
+  },
+  {
    "glyph": "tv",
-   "x": 890,
-   "y": 40,
+   "x": 898,
+   "y": 48,
    "scale": 1.0,
    "block": "tv"
   }
  ],
- "wires": [],
- "labels": [],
+ "wires": [
+  {
+   "id": "w_mains",
+   "kind": "power",
+   "points": [
+    [
+     580,
+     306
+    ],
+    [
+     880,
+     306
+    ],
+    [
+     880,
+     424
+    ],
+    [
+     1025,
+     424
+    ],
+    [
+     1025,
+     400
+    ]
+   ],
+   "label": "MAINS",
+   "label_at": [
+    930,
+    418
+   ],
+   "arrow": true
+  }
+ ],
+ "labels": [
+  {
+   "text": "NTSC 59.94 HZ // GSM 217 HZ",
+   "x": 1160,
+   "y": 24,
+   "size": 11,
+   "align": "r",
+   "b": "dim"
+  },
+  {
+   "text": "CLICK SCREEN TO ENLARGE",
+   "x": 890,
+   "y": 450,
+   "size": 11,
+   "align": "l",
+   "b": "dim"
+  },
+  {
+   "text": "GSM 217 HZ // 577 US BURST",
+   "x": 890,
+   "y": 470,
+   "size": 11,
+   "align": "l",
+   "b": "dim"
+  },
+  {
+   "text": "BEAT BANDS 0.63 / 3.4-4.4 MHZ",
+   "x": 890,
+   "y": 490,
+   "size": 11,
+   "align": "l",
+   "b": "dim"
+  },
+  {
+   "text": "HUM CRAWL |FM - 59.94| HZ",
+   "x": 890,
+   "y": 510,
+   "size": 11,
+   "align": "l",
+   "b": "dim"
+  },
+  {
+   "text": "LORENTZ F = Q (V X B) // 1/R^3",
+   "x": 890,
+   "y": 530,
+   "size": 11,
+   "align": "l",
+   "b": "dim"
+  }
+ ],
  "hint": {
   "x": 20,
   "y": 606,
@@ -145,9 +276,9 @@
   {
    "id": "phone_mode",
    "block": "phone",
-   "label": "PHONE",
+   "label": "MODE",
    "x": 26,
-   "y": 68,
+   "y": 178,
    "w": 258,
    "kind": "choice",
    "choices": [
@@ -162,7 +293,7 @@
    "block": "phone",
    "label": "DISTANCE",
    "x": 26,
-   "y": 90,
+   "y": 200,
    "w": 258,
    "kind": "slider",
    "unit": "cm",
@@ -174,9 +305,9 @@
   {
    "id": "radio_mod",
    "block": "radio",
-   "label": "RADIO",
+   "label": "MODULATION",
    "x": 26,
-   "y": 184,
+   "y": 422,
    "w": 258,
    "kind": "choice",
    "choices": [
@@ -191,7 +322,7 @@
    "block": "radio",
    "label": "FREQUENCY",
    "x": 26,
-   "y": 206,
+   "y": 444,
    "w": 258,
    "kind": "slider",
    "unit": "MHz",
@@ -205,7 +336,7 @@
    "block": "radio",
    "label": "FIELD",
    "x": 26,
-   "y": 228,
+   "y": 466,
    "w": 258,
    "kind": "slider",
    "unit": "V/m",
@@ -219,7 +350,7 @@
    "block": "mains",
    "label": "MAINS",
    "x": 316,
-   "y": 68,
+   "y": 178,
    "w": 258,
    "kind": "slider",
    "unit": "Hz",
@@ -233,7 +364,7 @@
    "block": "mains",
    "label": "SAG",
    "x": 316,
-   "y": 90,
+   "y": 200,
    "w": 258,
    "kind": "slider",
    "unit": "",
@@ -247,7 +378,7 @@
    "block": "mains",
    "label": "GROUND LOOP",
    "x": 316,
-   "y": 112,
+   "y": 222,
    "w": 258,
    "kind": "slider",
    "unit": "mV",
@@ -261,7 +392,7 @@
    "block": "mains",
    "label": "STRAY FIELD",
    "x": 316,
-   "y": 134,
+   "y": 244,
    "w": 258,
    "kind": "slider",
    "unit": "\u00b5T",
@@ -275,7 +406,7 @@
    "block": "mains",
    "label": "DIMMER",
    "x": 316,
-   "y": 156,
+   "y": 266,
    "w": 258,
    "kind": "slider",
    "unit": "\u00b0",
@@ -289,7 +420,7 @@
    "block": "crt_magnet",
    "label": "TUBE MAGNET",
    "x": 606,
-   "y": 68,
+   "y": 178,
    "w": 258,
    "kind": "choice",
    "choices": [
@@ -304,7 +435,7 @@
    "block": "crt_magnet",
    "label": "POSITION",
    "x": 606,
-   "y": 90,
+   "y": 200,
    "w": 258,
    "kind": "slider",
    "unit": "cm",
@@ -318,7 +449,7 @@
    "block": "crt_magnet",
    "label": "DISTANCE",
    "x": 606,
-   "y": 112,
+   "y": 222,
    "w": 258,
    "kind": "slider",
    "unit": "cm",
@@ -332,7 +463,7 @@
    "block": "crt_magnet",
    "label": "ANGLE",
    "x": 606,
-   "y": 134,
+   "y": 244,
    "w": 258,
    "kind": "slider",
    "unit": "\u00b0",
@@ -346,7 +477,7 @@
    "block": "head_magnet",
    "label": "HEAD MAGNET",
    "x": 606,
-   "y": 228,
+   "y": 444,
    "w": 258,
    "kind": "choice",
    "choices": [
@@ -361,7 +492,7 @@
    "block": "head_magnet",
    "label": "DISTANCE",
    "x": 606,
-   "y": 250,
+   "y": 466,
    "w": 258,
    "kind": "slider",
    "unit": "cm",
@@ -375,7 +506,7 @@
    "block": "coupling",
    "label": "SHIELDING",
    "x": 316,
-   "y": 250,
+   "y": 444,
    "w": 258,
    "kind": "slider",
    "unit": "dB",
@@ -389,7 +520,7 @@
    "block": "coupling",
    "label": "APPROACH",
    "x": 316,
-   "y": 272,
+   "y": 466,
    "w": 258,
    "kind": "slider",
    "unit": "s",
