@@ -153,6 +153,10 @@ LOOK_HELP = {
 SCHEMATIC_MIN_WIDTH = 1240
 SCHEMATIC_MIN_HEIGHT = 880
 SCHEMATIC_BOTTOM_MAX_HEIGHT = 250
+# Page names are shared by the buttons and the command-line entry point.
+SCHEMATIC_CIRCUIT = "circuit"
+SCHEMATIC_OUTSIDE = "outside"
+SCHEMATIC_PAGE_NAMES = (SCHEMATIC_CIRCUIT, SCHEMATIC_OUTSIDE)
 
 
 def _clock(seconds: float) -> str:
@@ -336,7 +340,8 @@ class MainWindow(QMainWindow):
         self._advanced_error: str | None = None
         self._closed = False
         self._schematic_mode = False
-        self._schematic_booted = False
+        self._schematic_page = SCHEMATIC_CIRCUIT
+        self._schematic_booted: set[str] = set()
         self._sync_guard = False
         self._schematic_baseline: dict[str, object] = {}
         self.original_frames: Frames | None = None
@@ -419,6 +424,25 @@ class MainWindow(QMainWindow):
     def schematic_mode(self) -> bool:
         return self._schematic_mode
 
+    @property
+    def schematic_page(self) -> str:
+        return self._schematic_page
+
+    def set_schematic_page(self, name: str) -> None:
+        if name not in SCHEMATIC_PAGE_NAMES:
+            raise ValueError(f"unknown schematic page: {name}")
+        self._schematic_page = name
+        view = self._schematic_pages[name]
+        for page_name, page_view in self._schematic_pages.items():
+            page_view.setVisible(self._schematic_mode and page_name == name)
+        self.circuit_button.setChecked(name == SCHEMATIC_CIRCUIT)
+        self.outside_button.setChecked(name == SCHEMATIC_OUTSIDE)
+        if self._schematic_mode:
+            if name not in self._schematic_booted:
+                view.start_boot()
+                self._schematic_booted.add(name)
+            view.setFocus(Qt.FocusReason.OtherFocusReason)
+
     def set_schematic_mode(self, enabled: bool) -> None:
         enabled = bool(enabled)
         if enabled == self._schematic_mode:
@@ -428,15 +452,16 @@ class MainWindow(QMainWindow):
         self._schematic_mode = enabled
         self.panels_button.setChecked(not enabled)
         self.schematic_button.setChecked(enabled)
+        self.circuit_button.setVisible(enabled)
+        self.outside_button.setVisible(enabled)
         self._move_schematic_widgets(enabled)
         self._panels_area.setVisible(not enabled)
-        self.schematic.setVisible(enabled)
         self._schematic_bottom.setVisible(enabled)
         if enabled:
-            if not self._schematic_booted:
-                self.schematic.start_boot()
-                self._schematic_booted = True
-            self.schematic.setFocus(Qt.FocusReason.OtherFocusReason)
+            self.set_schematic_page(self._schematic_page)
+        else:
+            for view in self._schematic_views:
+                view.setVisible(False)
 
     def look(self) -> Look:
         return Look(
@@ -508,8 +533,18 @@ class MainWindow(QMainWindow):
         self.schematic = SchematicView()
         self.schematic.setObjectName("schematicView")
         self.schematic.setVisible(False)
-        self.schematic.valueChanged.connect(self._on_schematic_value_changed)
-        self.schematic.resetRequested.connect(self._reset_schematic_value)
+        outside_dir = Path(__file__).resolve().parent / "schematic" / "outside"
+        self.outside = SchematicView(data_dir=outside_dir)
+        self.outside.setObjectName("outsideView")
+        self.outside.setVisible(False)
+        self._schematic_views = [self.schematic, self.outside]
+        self._schematic_pages = {
+            SCHEMATIC_CIRCUIT: self.schematic,
+            SCHEMATIC_OUTSIDE: self.outside,
+        }
+        for view in self._schematic_views:
+            view.valueChanged.connect(self._on_schematic_value_changed)
+            view.resetRequested.connect(self._reset_schematic_value)
         self.preview.image_changed.connect(self._sync_screen_image)
         self._sync_screen_image()
 
@@ -522,6 +557,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(self._mode_bar)
         root_layout.addWidget(self._panels_area, 1)
         root_layout.addWidget(self.schematic, 1)
+        root_layout.addWidget(self.outside, 1)
         root_layout.addWidget(self._schematic_bottom, 0)
         self.setCentralWidget(root)
 
@@ -545,6 +581,23 @@ class MainWindow(QMainWindow):
         self.schematic_button.clicked.connect(lambda: self.set_schematic_mode(True))
         layout.addWidget(self.panels_button)
         layout.addWidget(self.schematic_button)
+        self.circuit_button = QPushButton("Circuit")
+        self.circuit_button.setObjectName("circuitButton")
+        self.circuit_button.setCheckable(True)
+        self.outside_button = QPushButton("Outside")
+        self.outside_button.setObjectName("outsideButton")
+        self.outside_button.setCheckable(True)
+        pages = QButtonGroup(self)
+        pages.setExclusive(True)
+        pages.addButton(self.circuit_button)
+        pages.addButton(self.outside_button)
+        self.circuit_button.setChecked(True)
+        self.circuit_button.clicked.connect(lambda: self.set_schematic_page(SCHEMATIC_CIRCUIT))
+        self.outside_button.clicked.connect(lambda: self.set_schematic_page(SCHEMATIC_OUTSIDE))
+        self.circuit_button.setVisible(False)
+        self.outside_button.setVisible(False)
+        layout.addWidget(self.circuit_button)
+        layout.addWidget(self.outside_button)
 
     def _build_schematic_bottom(self) -> None:
         self._schematic_bottom = QWidget()
@@ -939,8 +992,13 @@ class MainWindow(QMainWindow):
             self.preset_combo.addItem(preset.name)
             self.preset_combo.setItemData(index, preset.summary, Qt.ItemDataRole.ToolTipRole)
         names = [preset.name for preset in presets]
-        self.schematic.set_choices("preset", names)
-        self.schematic.set_help({**{spec.key: spec.help for spec in CONDITION_FIELDS}, **LOOK_HELP})
+        field_help = {spec.key: spec.help for spec in CONDITION_FIELDS}
+        for view in self._schematic_views:
+            if "preset" in view.control_ids():
+                view.set_choices("preset", names)
+                view.set_help({**field_help, **LOOK_HELP})
+            else:
+                view.set_help(field_help)
         if DEFAULT_PRESET in names:
             self.preset_combo.setCurrentIndex(names.index(DEFAULT_PRESET))
         self._load_preset()
@@ -992,13 +1050,16 @@ class MainWindow(QMainWindow):
             return
         self._sync_guard = True
         try:
-            for control_id, value in self._schematic_values().items():
-                self.schematic.set_value(control_id, value, emit=False)
+            values = self._schematic_values()
+            for view in self._schematic_views:
+                for control_id in view.control_ids():
+                    view.set_value(control_id, values[control_id], emit=False)
         finally:
             self._sync_guard = False
 
     def _sync_screen_image(self) -> None:
-        self.schematic.set_screen_image(self.preview.image())
+        for view in self._schematic_views:
+            view.set_screen_image(self.preview.image())
 
     def _set_schematic_baseline(self, condition: dict[str, float | bool | str]) -> None:
         self._schematic_baseline = {
@@ -1008,7 +1069,8 @@ class MainWindow(QMainWindow):
             "signal": "svideo",
             "audio": "process",
         }
-        self.schematic.set_baseline(self._schematic_baseline)
+        for view in self._schematic_views:
+            view.set_baseline(self._schematic_baseline)
 
     def _load_preset(self) -> None:
         name = self.preset_combo.currentText()

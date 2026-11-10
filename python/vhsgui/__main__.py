@@ -1,4 +1,4 @@
-"""Command line entry point: python -m vhsgui [--schematic] [--binary PATH] [--screenshot PNG] [input]."""
+"""Command line entry point: python -m vhsgui [--schematic] [--page {circuit,outside}] [--binary PATH] [--screenshot PNG] [input]."""
 from __future__ import annotations
 
 import argparse
@@ -22,8 +22,14 @@ def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("input", nargs="?", help="video file to open")
     parser.add_argument("--binary", metavar="PATH", help="the vhsphys executable (default: search for it)")
     parser.add_argument("--schematic", action="store_true", help="start with the phosphor schematic")
+    parser.add_argument("--page", choices=("circuit", "outside"), help="schematic page to show")
     parser.add_argument("--screenshot", metavar="PNG", help="save a picture of the window and exit")
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.page is not None and not args.schematic:
+        parser.error("--page requires --schematic")
+    if args.page is None:
+        args.page = "circuit"
+    return args
 
 
 def _run_window(args: argparse.Namespace, binary: str, ffmpeg: str, ffprobe: str) -> int:
@@ -44,6 +50,7 @@ def _run_window(args: argparse.Namespace, binary: str, ffmpeg: str, ffprobe: str
     if args.input:
         window.open_input(args.input)
     if args.schematic:
+        window.set_schematic_page(args.page)
         window.set_schematic_mode(True)
     window.show()
 
@@ -76,7 +83,8 @@ def _run_window(args: argparse.Namespace, binary: str, ffmpeg: str, ffprobe: str
     window.resize(*SCREENSHOT_SIZE)
     app.processEvents()
     if args.schematic:
-        window.schematic.skip_boot()
+        shown = window.schematic if window.schematic_page == "circuit" else window.outside
+        shown.skip_boot()
     picture = window.grab()
     saved = picture.save(args.screenshot)
     window.close()
