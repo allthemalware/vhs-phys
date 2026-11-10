@@ -229,7 +229,7 @@ differential phase/gain from carrier-dependent head response.
 ## 6. Not modelled in this prototype (next steps)
 
 PAL/SECAM and S-VHS, LP/EP track geometry, linear audio and Hi-Fi audio, the
-non-linear (level-dependent) de-emphasis and S-VHS sub-emphasis, tape
+luma noise canceller of HQ decks (SP, playback only) and S-VHS sub-emphasis, tape
 print-through, a full Jiles-Atherton record model, detailed head contour effect,
 and an interlaced 59.94 fps output mode.
 

@@ -212,7 +212,7 @@ Architecture and numerical decisions: `docs/ARCHITECTURE.md`.
 
 ## Validation
 
-* 156 Rust tests (`cargo test --release`): carrier frequencies match the VHS
+* 165 Rust tests (`cargo test --release`): carrier frequencies match the VHS
   standard, the discriminator is exact, the chroma duty-cycle recording gain
   matches theory, spacing loss follows 54.6 dB per wavelength, the azimuth
   filter follows the sinc law, adjacent tracks are line aligned, creases sit at a
@@ -241,7 +241,7 @@ cd python && ../.venv/bin/python -m pytest -q tests
   place; PAL needs a per-line V switch).
 * Input is treated as a progressive source (the two fields of a frame come from
   the same image); there is no 59.94 fps field output yet.
-* Non-linear (level dependent) emphasis, Hi-Fi audio and print-through are not
+* The luma noise canceller of HQ decks (SP, playback only), Hi-Fi audio and print-through are not
   modelled.
 * The ageing laws and several defaults are engineering estimates (tagged `[est]`
   in the source and notes) and are meant to be tuned against real tapes.
