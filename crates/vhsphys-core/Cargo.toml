@@ -2,7 +2,7 @@
 name = "vhsphys-core"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file.workspace = true
 description = "Physical model of VHS record/playback: tape, heads, mechanics and deck electronics"
 
 [dependencies]

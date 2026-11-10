@@ -261,3 +261,9 @@ scripts/gallery.sh    regenerate the gallery images
 scripts/features.sh   regenerate the feature images
 scripts/interference.sh  regenerate the interference images
 ```
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE): free for any noncommercial purpose
+(personal, research, hobby, education, nonprofit); commercial use needs a
+separate licence from the author.
