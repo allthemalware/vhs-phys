@@ -13,6 +13,7 @@
 use serde::{Deserialize, Serialize};
 use crate::consts::*;
 use crate::dsp::*;
+use crate::emphasis::SubPreemphasis;
 use crate::video::Baseband;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
@@ -185,11 +186,18 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
     upsample3(&cu, &mut cu_rf);
     upsample3(&cv, &mut cv_rf);
 
-    // ---- luma: bandwidth, emphasis, clip ----
+    // ---- luma: bandwidth, sub-emphasis, emphasis, clip ----
     let mut lpf = butter_lp(2, p.luma_lpf_hz, FS_BB);
     lpf.settle(0.0);
     lpf.process(&mut y);
     upsample3(&y, &mut y_rf);
+    // LP and EP: the level-dependent boost of fine detail comes first, so the main emphasis
+    // sees the boosted signal and the playback can undo the two in the reverse order
+    if let Some(se) = &p.sub_emphasis {
+        let mut sub = SubPreemphasis::new(se, FS_RF);
+        sub.settle(0.0);
+        sub.process(&mut y_rf);
+    }
     let tau = p.emph_tau;
     let mut emph = Biquad::first_order_pz(1.0 / tau, p.emph_ratio / tau, FS_RF);
     emph.settle(0.0);

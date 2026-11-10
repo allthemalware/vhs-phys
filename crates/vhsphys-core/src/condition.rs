@@ -8,6 +8,7 @@
 //! estimate rather than a published figure it is marked `[est]`; the numbers
 //! are meant to be tuned against real tapes and decks.
 
+use crate::emphasis::SubEmphasisParams;
 use crate::format::TapeSpeed;
 use crate::interference::hash_unit;
 use crate::interference_params::{CrtMagnet, CrtParams, HeadMagnet, InterferenceParams, MagnetKind, MainsParams, PhoneMode, PhoneParams, RadioMod, RadioParams};
@@ -400,6 +401,11 @@ impl Condition {
         r.fm_freq_error = 0.003 * rec_af * g();
         r.drive_offset = 0.03 * rec_af * g() * (rec_ecap.esr_mult / 5.0).min(2.0);
         r.relay_threshold *= 1.0 + 0.10 * self.head_wear * g().abs();
+
+        // the LP and EP sub-emphasis: recorder and player both hold the format's figures, so the
+        // playback network is the exact inverse of the recorded one (no drift modelled yet)
+        p.record.sub_emphasis = SubEmphasisParams::for_speed(self.tape_speed);
+        p.deck.sub_deemphasis = SubEmphasisParams::for_speed(self.tape_speed);
         p
     }
 }

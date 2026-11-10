@@ -11,6 +11,7 @@
 use serde::{Deserialize, Serialize};
 use crate::consts::*;
 use crate::dsp::*;
+use crate::emphasis::SubDeemphasis;
 
 /// Nominal discriminator delay assumed by the downstream scaling (samples).
 pub const DEMOD_DELAY_NOMINAL: f64 = 3.0;
@@ -255,12 +256,18 @@ pub fn process_segment(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
         y[i] = ((f - F_SYNC_TIP) / HZ_PER_IRE - 40.0) as f32;
     }
 
-    // ---- de-emphasis (inverse of the record emphasis, with component drift) ----
+    // ---- de-emphasis (inverse of the record emphasis, with component drift), sub-deemphasis ----
     let t = PRE_EMPH_TAU * p.deemph_tau_scale;
     let ratio = PRE_EMPH_RATIO * p.deemph_ratio_scale;
     let mut de = Biquad::first_order_pz(ratio / t, 1.0 / t, FS_RF);
     de.settle(y[0] as f64);
     de.process(&mut y);
+    // LP and EP: undo the sub-preemphasis, which was applied before the main emphasis
+    if let Some(se) = &p.sub_deemphasis {
+        let mut sub = SubDeemphasis::new(se, FS_RF);
+        sub.settle(y[0] as f64);
+        sub.process(&mut y);
+    }
 
     // ---- coupling capacitor (high-pass), luma low-pass, aperture corrector ----
     let mut cpl = Biquad::one_pole_hp(p.coupling_hpf_hz, FS_RF);

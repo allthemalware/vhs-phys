@@ -25,6 +25,7 @@ the time axis for everything, so any process that is a function of global time
 | `rng` | seeded, order-independent random numbers (hash of seed/stream/index) |
 | `video` | NTSC raster including vsync structure; RGB <-> YUV; encode/decode helpers |
 | `record` | record deck chain and the saturating tape relay; produces `Transition`s |
+| `emphasis` | the LP/EP sub-preemphasis (a level-dependent high-frequency boost, table 4 of ST 32) and its exact inverse on playback |
 | `tape` | defect map in tape coordinates, spacing roughness, creases, edge profile |
 | `tracking` | lateral head position and the weights of the tracks under the head |
 | `mech` | timebase error: drift, drum, tape-path resonance, stick-slip, per-line, flagging |
@@ -52,6 +53,18 @@ Session::process(batch)
                           run the deck electronics (state warmed up on 2 lines either side)
   4 decode_frame(k)      parallel over frames   sync/AFC/colour decode of fields 2k, 2k+1
 ```
+
+The luma passes these stages in order (the LP/EP pair only when `RecordParams.sub_emphasis` and
+`DeckParams.sub_deemphasis` are set, which `Condition::to_params` does at LP and EP):
+
+```
+record     luma low-pass (baseband) -> x3 to RF -> sub-preemphasis (LP/EP) -> main emphasis -> white/dark clip -> FM
+playback   discriminator -> main de-emphasis -> sub-deemphasis (LP/EP) -> coupling capacitor -> x1/3 to baseband
+           -> video low-pass -> aperture corrector -> supply disturbances
+```
+
+The two emphasis pairs nest: the playback undoes the record stages in the reverse order, so the sub-deemphasis
+sees what the sub-preemphasis produced (less what the clip and the FM path's bandwidth took) plus the tape's noise.
 
 The outside world enters at the circuit nodes where it physically arrives (all functions of the global sample index,
 so a split buffer or a render from any start gives the same result; with every source off nothing is called):
