@@ -11,7 +11,7 @@
 //! Names, signatures and the semantics written here are fixed; `tests/interference_physics.rs` and
 //! `tests/interference_signal.rs` pin the behaviour.
 
-use crate::consts::FS_RF;
+use crate::consts::{FS_RF, OS};
 use crate::interference_params::*;
 use crate::rng::hash3;
 use std::f64::consts::PI;
@@ -56,6 +56,12 @@ const RF_PICKUP_LIMIT: f64 = 0.45;
 
 /// A dimmer's ring is gone (e^-10) after this many time constants; later events are not summed.
 const DIMMER_WINDOW_TAUS: f64 = 10.0;
+
+/// The tones of the radio are evaluated by rotating phasors, set again from the absolute sample index at every multiple of this
+/// many RF samples. Each rotation rounds by a few 1e-16, so within a block a phasor stays within about 1e-12 of its amplitude
+/// of the exact value (closer than the direct formula itself gets once its argument is large), and because the anchors are
+/// fixed in the global index a buffer split anywhere gives the same values.
+const PHASOR_BLOCK: i64 = 1024;
 
 /// One partial of the programme: frequency (Hz), amplitude, phase (rad).
 type Partial = (f64, f64, f64);
@@ -219,8 +225,12 @@ fn sum_sines(parts: &[Partial], t_s: f64) -> f64 {
 /// The mains as a unit-rms waveform: `(sin th + MAINS_H3 sin 3 th + MAINS_H5 sin 5 th) / sqrt((1 + H3^2 + H5^2) / 2)`
 /// with `th = 2 pi f t + phase`.
 pub fn mains_waveform(t_s: f64, freq_hz: f64, phase: f64) -> f64 {
-    let th = TAU * freq_hz * t_s + phase;
-    (th.sin() + MAINS_H3 * (3.0 * th).sin() + MAINS_H5 * (5.0 * th).sin()) / mains_rms_norm()
+    let s = (TAU * freq_hz * t_s + phase).sin();
+    // the harmonics from the fundamental by the multiple-angle identities (exact): one transcendental call instead of three
+    let s3 = s * s * s;
+    let sin3 = 3.0 * s - 4.0 * s3;
+    let sin5 = 5.0 * s - 20.0 * s3 + 16.0 * s3 * s * s;
+    (s + MAINS_H3 * sin3 + MAINS_H5 * sin5) / mains_rms_norm()
 }
 
 /// Rms of the unnormalised line; dividing by it gives the waveform unit rms.
@@ -240,23 +250,17 @@ pub fn mains_waveform_derivative(t_s: f64, freq_hz: f64, phase: f64) -> f64 {
 /// after each, at `t_k = (k + angle/180) / (2 f) - phase / (2 pi f)`. Each event contributes, for `tau = t - t_k >= 0`,
 /// `(-1)^k sin(angle) exp(-tau / tau_s) sin(2 pi ring_hz tau)`; events older than `10 tau_s` are ignored. Zero when the dimmer is off.
 pub fn dimmer_ring(t_s: f64, mains: &MainsParams, ring_hz: f64, tau_s: f64) -> f64 {
-    let f = mains.freq_hz;
-    if mains.dimmer_angle_deg <= 0.0 || f <= 0.0 {
+    let Some(events) = DimmerEvents::new(mains) else {
         return 0.0;
-    }
-    // Event `k` fires at (k + angle/180) / (2 f) - phase / (2 pi f); invert that to find which events lie in the window.
-    let fraction = mains.dimmer_angle_deg / 180.0;
-    let shift_s = mains.phase / (TAU * f);
-    let event_s = |k: i64| (k as f64 + fraction) / (2.0 * f) - shift_s;
-    let index_at = |t: f64| (t + shift_s) * 2.0 * f - fraction;
+    };
     let window_s = DIMMER_WINDOW_TAUS * tau_s;
     // the step height is the mains voltage at the firing angle
     let step = mains.dimmer_angle_deg.to_radians().sin();
-    let first = index_at(t_s - window_s).ceil() as i64;
-    let last = index_at(t_s).floor() as i64;
+    let first = events.index_at(t_s - window_s).ceil() as i64;
+    let last = events.index_at(t_s).floor() as i64;
     let mut sum = 0.0;
     for k in first..=last {
-        let age = t_s - event_s(k);
+        let age = t_s - events.event_s(k);
         if (0.0..=window_s).contains(&age) {
             // successive half cycles are opposite in polarity
             let sign = if k.rem_euclid(2) == 0 { 1.0 } else { -1.0 };
@@ -264,6 +268,61 @@ pub fn dimmer_ring(t_s: f64, mains: &MainsParams, ring_hz: f64, tau_s: f64) -> f
         }
     }
     sum
+}
+
+/// When the dimmer fires. Event `k` is at `(k + angle/180) / (2 f) - phase / (2 pi f)`; the inverse gives the (fractional)
+/// event index reached at a time, so that the events inside a window can be enumerated. `None` while the dimmer is off.
+struct DimmerEvents {
+    freq_hz: f64,
+    fraction: f64,
+    shift_s: f64,
+}
+
+impl DimmerEvents {
+    fn new(mains: &MainsParams) -> Option<Self> {
+        if mains.dimmer_angle_deg <= 0.0 || mains.freq_hz <= 0.0 {
+            return None;
+        }
+        Some(Self { freq_hz: mains.freq_hz, fraction: mains.dimmer_angle_deg / 180.0, shift_s: mains.phase / (TAU * mains.freq_hz) })
+    }
+
+    fn event_s(&self, k: i64) -> f64 {
+        (k as f64 + self.fraction) / (2.0 * self.freq_hz) - self.shift_s
+    }
+
+    fn index_at(&self, t_s: f64) -> f64 {
+        (t_s + self.shift_s) * 2.0 * self.freq_hz - self.fraction
+    }
+}
+
+/// The RF sample ranges inside `[g_lo, g_hi]` on which `dimmer_ring` can be other than zero: a window of `DIMMER_WINDOW_TAUS * tau_s`
+/// after each firing, widened by one sample at each end against rounding, merged where they overlap. Between the ranges every
+/// event is older than the window and the ring is exactly zero, so those samples need no evaluation.
+fn dimmer_spans(mains: &MainsParams, tau_s: f64, g_lo: i64, g_hi: i64) -> Vec<(i64, i64)> {
+    let mut spans = Vec::new();
+    let Some(events) = DimmerEvents::new(mains) else {
+        return spans;
+    };
+    if g_hi < g_lo {
+        return spans;
+    }
+    let window_s = DIMMER_WINDOW_TAUS * tau_s;
+    // the oldest event whose window can reach the first sample, the newest fired by the last sample; one spare on each side
+    let first = events.index_at(rf_time(g_lo) - window_s).floor() as i64 - 1;
+    let last = events.index_at(rf_time(g_hi)).ceil() as i64 + 1;
+    for k in first..=last {
+        let fired_s = events.event_s(k);
+        let lo = ((fired_s * FS_RF).floor() as i64 - 1).max(g_lo);
+        let hi = (((fired_s + window_s) * FS_RF).ceil() as i64 + 1).min(g_hi);
+        if lo > hi {
+            continue;
+        }
+        match spans.last_mut() {
+            Some((_, end)) if lo <= *end + 1 => *end = hi.max(*end),
+            _ => spans.push((lo, hi)),
+        }
+    }
+    spans
 }
 
 // ------------------------------------------------------------------------------- magnetism
@@ -363,13 +422,53 @@ pub fn rf_pickup_add(p: &InterferenceParams, g0: i64, buf: &mut [f32], a_nom: f6
     if p.radio_on() && p.radio.freq_hz < RF_PICKUP_LIMIT * FS_RF {
         add_radio_carrier(p, g0, buf, a_nom);
     }
-    if p.dimmer_on() {
+    if p.dimmer_on() && !buf.is_empty() {
         let c = &p.coupling;
         let scale = a_nom * c.dimmer_rf_ratio;
-        for (i, v) in buf.iter_mut().enumerate() {
-            let t = rf_time(g0 + i as i64);
-            *v += (scale * dimmer_ring(t, &p.mains, c.dimmer_rf_hz, c.dimmer_rf_tau_s)) as f32;
+        // the ring is exactly zero except in a short window after each firing: only those samples are evaluated
+        for (lo, hi) in dimmer_spans(&p.mains, c.dimmer_rf_tau_s, g0, g0 + buf.len() as i64 - 1) {
+            for g in lo..=hi {
+                buf[(g - g0) as usize] += (scale * dimmer_ring(rf_time(g), &p.mains, c.dimmer_rf_hz, c.dimmer_rf_tau_s)) as f32;
+            }
         }
+    }
+}
+
+/// `video_gain` and `video_add_ire` for every pixel of one line at once. Pixel `x` sits at the global RF sample
+/// `round((base + x) * OS)`, where the decoder places it; `gain[x]` receives `video_gain(p, g)` and `add[x]` `video_add_ire(p, g)`.
+///
+/// Equal to the per-pixel functions to better than 1e-6 of each term's amplitude: the phone's field and the shielding are
+/// evaluated once per line (or once per distance while the phone approaches), the programme of the AM station by rotating
+/// phasors stepping one pixel at a time (set from the absolute index at the first pixel and wherever the pixel spacing is not
+/// `OS`), and the dimmer only inside the windows where its ring is other than zero. All of it is rounding, none approximation.
+pub fn video_line_terms(p: &InterferenceParams, base: f64, gain: &mut [f32], add: &mut [f32]) {
+    assert_eq!(gain.len(), add.len(), "one gain and one offset per pixel");
+    gain.fill(0.0);
+    add.fill(0.0);
+    if gain.is_empty() || !p.video_on() {
+        return;
+    }
+    let c = &p.coupling;
+    let pixel_rf = |x: usize| ((base + x as f64) * OS as f64).round() as i64;
+    let mut phone = p.phone_on().then(|| PhonePulses::new(p));
+    let mut am = (p.radio_on() && p.radio.modulation == RadioMod::Am).then(|| AmDetector::new(p));
+    let hum_ire = ground_hum_ire(p);
+    let dimmer = if p.dimmer_on() { dimmer_spans(&p.mains, c.dimmer_ring_tau_s, pixel_rf(0), pixel_rf(gain.len() - 1)) } else { Vec::new() };
+    for (x, (gn, ad)) in gain.iter_mut().zip(add.iter_mut()).enumerate() {
+        let g = pixel_rf(x);
+        let t = rf_time(g);
+        let pulse = phone.as_mut().map_or(0.0, |ph| ph.vpm2(t));
+        let rectified = am.as_mut().map_or(0.0, |am| am.vpm2(g));
+        let mut ire = c.video_ire_per_vpm2 * (pulse + rectified);
+        if p.ground_on() {
+            let hum = mains_waveform(t, p.mains.freq_hz, p.mains.phase);
+            ire += hum_ire * c.clamp_residual * hum;
+            *gn = (c.ground_gain_per_ire * hum_ire * hum) as f32;
+        }
+        if dimmer.iter().any(|&(lo, hi)| (lo..=hi).contains(&g)) {
+            ire += c.dimmer_video_ire * dimmer_ring(t, &p.mains, c.dimmer_ring_hz, c.dimmer_ring_tau_s);
+        }
+        *ad = ire as f32;
     }
 }
 
@@ -469,22 +568,221 @@ fn ground_hum_ire(p: &InterferenceParams) -> f64 {
     p.mains.ground_loop_mv * 1.0e-3 * p.coupling.ground_to_video / VOLTS_PER_IRE
 }
 
-/// Add the radio carrier (or, for single sideband, the voice sidebands) induced in the head leads.
+/// Add the radio carrier (or, for single sideband, the voice sidebands) induced in the head leads:
+/// `amp * cos(2 pi f t + phi0)` for CW, `amp * (1 + depth * programme(t)) * cos(2 pi f t + phi0)` for AM,
+/// `amp * sum amp_k cos(2 pi (f + f_k) t + phi_k)` for SSB (each partial shifted up by the carrier, the carrier itself suppressed).
 fn add_radio_carrier(p: &InterferenceParams, g0: i64, buf: &mut [f32], a_nom: f64) {
     let r = &p.radio;
     let amp = a_nom * radio_carrier_ratio(r, p.shielding_db, &p.coupling);
     let phi0 = TAU * hash_unit(p.seed, STREAM_CARRIER, 0);
-    let parts = partials(p.seed);
-    for (i, v) in buf.iter_mut().enumerate() {
-        let t = rf_time(g0 + i as i64);
-        let carrier = (TAU * r.freq_hz * t + phi0).cos();
-        let s = match r.modulation {
-            RadioMod::Am => (1.0 + r.depth * sum_sines(&parts, t)) * carrier,
-            RadioMod::Cw => carrier,
-            // upper sideband: each partial is shifted up by the carrier and the carrier itself is suppressed
-            RadioMod::Ssb => parts.iter().map(|&(f, a, phi)| a * (TAU * (r.freq_hz + f) * t + phi).cos()).sum(),
-            RadioMod::Off => 0.0,
-        };
-        *v += (amp * s) as f32;
+    let carrier = ToneBank::new([r.freq_hz], [phi0], [1.0], 1);
+    match r.modulation {
+        RadioMod::Cw => add_rotating(&mut CwSignal(carrier), g0, buf, amp),
+        RadioMod::Am => {
+            let programme = programme_bank(&partials(p.seed), 0.0, 1);
+            add_rotating(&mut AmSignal { carrier, programme, depth: r.depth }, g0, buf, amp);
+        }
+        RadioMod::Ssb => add_rotating(&mut SsbSignal(programme_bank(&partials(p.seed), r.freq_hz, 1)), g0, buf, amp),
+        RadioMod::Off => {}
+    }
+}
+
+/// Add `amp * signal` over `buf`, `g0` being the global index of `buf[0]`. The phasors are set from the absolute index at every
+/// multiple of `PHASOR_BLOCK`, including the one before `g0`, and rotated from there: the value at a sample does not depend on
+/// where the buffer starts, so consecutive pieces equal the whole.
+fn add_rotating<S: Rotating>(signal: &mut S, g0: i64, buf: &mut [f32], amp: f64) {
+    let end = g0 + buf.len() as i64;
+    let mut block = g0.div_euclid(PHASOR_BLOCK) * PHASOR_BLOCK;
+    while block < end {
+        signal.anchor(block);
+        for _ in block..g0 {
+            signal.advance();
+        }
+        let (lo, hi) = (block.max(g0), (block + PHASOR_BLOCK).min(end));
+        for v in &mut buf[(lo - g0) as usize..(hi - g0) as usize] {
+            *v += (amp * signal.value()) as f32;
+            signal.advance();
+        }
+        block += PHASOR_BLOCK;
+    }
+}
+
+/// A signal evaluated sample by sample by rotating phasors.
+trait Rotating {
+    /// Set the phasors from the absolute RF sample index `g`.
+    fn anchor(&mut self, g: i64);
+    /// Move on by one RF sample.
+    fn advance(&mut self);
+    /// The signal at the current sample.
+    fn value(&self) -> f64;
+}
+
+/// The plain carrier.
+struct CwSignal(ToneBank<1>);
+
+impl Rotating for CwSignal {
+    fn anchor(&mut self, g: i64) {
+        self.0.anchor(g);
+    }
+    fn advance(&mut self) {
+        self.0.advance();
+    }
+    fn value(&self) -> f64 {
+        self.0.re[0]
+    }
+}
+
+/// The carrier with the programme on its envelope.
+struct AmSignal {
+    carrier: ToneBank<1>,
+    programme: ToneBank<PROGRAM_PARTIALS>,
+    depth: f64,
+}
+
+impl Rotating for AmSignal {
+    fn anchor(&mut self, g: i64) {
+        self.carrier.anchor(g);
+        self.programme.anchor(g);
+    }
+    fn advance(&mut self) {
+        self.carrier.advance();
+        self.programme.advance();
+    }
+    fn value(&self) -> f64 {
+        (1.0 + self.depth * self.programme.sin_sum()) * self.carrier.re[0]
+    }
+}
+
+/// The upper sideband: the partials shifted up by the carrier, no carrier.
+struct SsbSignal(ToneBank<PROGRAM_PARTIALS>);
+
+impl Rotating for SsbSignal {
+    fn anchor(&mut self, g: i64) {
+        self.0.anchor(g);
+    }
+    fn advance(&mut self) {
+        self.0.advance();
+    }
+    fn value(&self) -> f64 {
+        self.0.cos_sum()
+    }
+}
+
+/// Tones `amp_k (cos, sin)(2 pi f_k t + phi_k)` at the RF samples, by rotating phasors: one complex multiplication per sample and
+/// tone instead of a transcendental call. `anchor` sets every phasor with the very expression of the direct formula; `advance`
+/// moves them on by `stride` samples. Real and imaginary parts are kept in separate arrays so the rotation vectorises across the tones.
+struct ToneBank<const N: usize> {
+    freq_hz: [f64; N],
+    phase: [f64; N],
+    amp: [f64; N],
+    /// The rotation of one step, `(cos, sin)(2 pi f_k stride / FS_RF)`.
+    step_cos: [f64; N],
+    step_sin: [f64; N],
+    /// The phasors at the current sample.
+    re: [f64; N],
+    im: [f64; N],
+}
+
+impl<const N: usize> ToneBank<N> {
+    fn new(freq_hz: [f64; N], phase: [f64; N], amp: [f64; N], stride: i64) -> Self {
+        let step_cos = freq_hz.map(|f| (TAU * f * rf_time(stride)).cos());
+        let step_sin = freq_hz.map(|f| (TAU * f * rf_time(stride)).sin());
+        Self { freq_hz, phase, amp, step_cos, step_sin, re: [1.0; N], im: [0.0; N] }
+    }
+
+    fn anchor(&mut self, g: i64) {
+        let t = rf_time(g);
+        for k in 0..N {
+            let (s, c) = (TAU * self.freq_hz[k] * t + self.phase[k]).sin_cos();
+            self.re[k] = c;
+            self.im[k] = s;
+        }
+    }
+
+    fn advance(&mut self) {
+        for k in 0..N {
+            let (re, im) = (self.re[k], self.im[k]);
+            self.re[k] = re * self.step_cos[k] - im * self.step_sin[k];
+            self.im[k] = re * self.step_sin[k] + im * self.step_cos[k];
+        }
+    }
+
+    fn cos_sum(&self) -> f64 {
+        weighted_sum(&self.amp, &self.re)
+    }
+
+    fn sin_sum(&self) -> f64 {
+        weighted_sum(&self.amp, &self.im)
+    }
+}
+
+/// `sum amp_k x_k`, accumulated in two interleaved chains: a single chain of ten dependent additions would set the pace of the
+/// RF loop. The order of the additions changes the result by rounding only.
+fn weighted_sum<const N: usize>(amp: &[f64; N], x: &[f64; N]) -> f64 {
+    let (mut even, mut odd) = (0.0, 0.0);
+    for k in (0..N).step_by(2) {
+        even += amp[k] * x[k];
+    }
+    for k in (1..N).step_by(2) {
+        odd += amp[k] * x[k];
+    }
+    even + odd
+}
+
+/// The partials of the programme as a tone bank, every frequency raised by `shift_hz` (the carrier for single sideband, 0 for the
+/// programme itself), stepping `stride` RF samples at a time.
+fn programme_bank(parts: &[Partial; PROGRAM_PARTIALS], shift_hz: f64, stride: i64) -> ToneBank<PROGRAM_PARTIALS> {
+    ToneBank::new(parts.map(|(f, _, _)| shift_hz + f), parts.map(|(_, _, phi)| phi), parts.map(|(_, a, _)| a), stride)
+}
+
+/// `phone_pulse_vpm2` along a line: the shielding factor once, the field again only when the distance has moved.
+struct PhonePulses<'a> {
+    p: &'a InterferenceParams,
+    shield: f64,
+    mean: f64,
+    distance_m: f64,
+    e2: f64,
+}
+
+impl<'a> PhonePulses<'a> {
+    fn new(p: &'a InterferenceParams) -> Self {
+        Self { p, shield: 10f64.powf(-p.shielding_db / 20.0), mean: phone_mean_envelope(p.phone.mode), distance_m: f64::NAN, e2: 0.0 }
+    }
+
+    fn vpm2(&mut self, t_s: f64) -> f64 {
+        let ph = &self.p.phone;
+        let d = ph.distance_m * approach_scale(self.p.approach_s, t_s);
+        if d != self.distance_m {
+            let e = phone_field_vpm(ph.peak_power_w, ph.antenna_gain, d, ph.freq_hz) * self.shield;
+            self.distance_m = d;
+            self.e2 = e * e;
+        }
+        self.e2 * (phone_envelope(ph.mode, t_s, self.p.seed) - self.mean)
+    }
+}
+
+/// `am_rectified_vpm2` along a line: the programme by rotating phasors stepping one pixel (`OS` RF samples) at a time, set from the
+/// absolute index at the first pixel and wherever the spacing to the previous pixel is not `OS`.
+struct AmDetector {
+    programme: ToneBank<PROGRAM_PARTIALS>,
+    depth: f64,
+    e2: f64,
+    previous_g: Option<i64>,
+}
+
+impl AmDetector {
+    fn new(p: &InterferenceParams) -> Self {
+        let e = shielded_vpm(p.radio.field_vpm, p.shielding_db);
+        Self { programme: programme_bank(&partials(p.seed), 0.0, OS as i64), depth: p.radio.depth, e2: e * e, previous_g: None }
+    }
+
+    fn vpm2(&mut self, g: i64) -> f64 {
+        match self.previous_g {
+            Some(previous) if g - previous == OS as i64 => self.programme.advance(),
+            _ => self.programme.anchor(g),
+        }
+        self.previous_g = Some(g);
+        let env = 1.0 + self.depth * self.programme.sin_sum();
+        self.e2 * (env * env - 1.0)
     }
 }

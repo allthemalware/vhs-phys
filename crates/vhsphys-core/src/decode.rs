@@ -17,7 +17,7 @@ use crate::composite::{self, CompositeParams};
 use crate::consts::*;
 use crate::crt;
 use crate::dsp::*;
-use crate::interference::{video_add_ire, video_gain};
+use crate::interference::video_line_terms;
 use crate::interference_params::InterferenceParams;
 use crate::record::line_rotation;
 use crate::video::{decode_ideal, Baseband, Frame};
@@ -180,12 +180,11 @@ pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams, composite: &Com
 
 /// What the outside world does to one luma sample after the TV's clamp: a ground loop moves
 /// the bias of the video stages (black stays, whites move) and the pulses, the hum that the
-/// clamp leaves and the rings add on top. `pos` is the baseband position of the pixel; the
-/// deck's RF time axis is `OS` times finer.
+/// clamp leaves and the rings add on top. `gain` and `add` are the pixel's terms from
+/// `video_line_terms`, which places the pixels on the deck's RF time axis (`OS` times finer).
 #[inline]
-fn outside_luma(itf: &InterferenceParams, y: f32, pos: f64) -> f32 {
-    let g = (pos * OS as f64).round() as i64;
-    y * (1.0 + video_gain(itf, g)) + video_add_ire(itf, g)
+fn outside_luma(y: f32, gain: f32, add: f32) -> f32 {
+    y * (1.0 + gain) + add
 }
 
 /// Luma and chroma of frame `k` as the deck delivers them, placed on the nominal raster
@@ -202,6 +201,8 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
     let cat = |n: f64, c: &[f32]| -> f32 { sample_cubic(c, n - cstart as f64) };
 
     let mut planes = Baseband::blank();
+    // the outside world's terms for the pixels of the current line, filled once per line
+    let (mut gain_line, mut add_line) = (vec![0.0f32; ACTIVE_W], vec![0.0f32; ACTIVE_W]);
     for field in 0..2 {
         let mut s_est = 0.0f64;
         let (mut phi_s, mut g_s) = (0.0f64, 0.0f64);
@@ -256,13 +257,16 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
             let scale = gain * (BURST_AMP_IRE as f64 * p.burst_boost) / p.burst_nominal.max(1e-12);
 
             let base = s_est + ACTIVE_START as f64;
+            if outside {
+                video_line_terms(itf, base, &mut gain_line, &mut add_line);
+            }
             let mut yl = Vec::with_capacity(ACTIVE_W);
             let mut cl = Vec::with_capacity(ACTIVE_W);
             for x in 0..ACTIVE_W {
                 let pos = base + x as f64;
                 let mut y = sample_cubic(view.luma, pos - view.bb0 as f64) - off;
                 if outside {
-                    y = outside_luma(itf, y, pos);
+                    y = outside_luma(y, gain_line[x], add_line[x]);
                 }
                 yl.push(y);
                 if killed {
