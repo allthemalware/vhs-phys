@@ -209,6 +209,8 @@ The sound takes the same transport, supply, tape and head parameters (see docs/A
 
 Research notes, parameter provenance and sources: `docs/RESEARCH.md`.
 Architecture and numerical decisions: `docs/ARCHITECTURE.md`.
+Comparison with other projects and a roadmap beyond this prototype: `docs/COMPARISON.md`,
+`docs/PHYSICAL_MODELLING_RESEARCH.md`.
 
 ## Validation
 
@@ -253,7 +255,8 @@ crates/vhsphys-core   physics library (record, tape, head, mech, electronics, de
 crates/vhsphys-cli    `vhsphys` command line tool (ffmpeg pipes)
 python/vhsgui         desktop front end (PySide6) for the command line tool
 python/vhslab         reference physics, validation report, tuning and plotting tools
-docs/                 RESEARCH, ARCHITECTURE, PLUGIN, PERFORMANCE, COMPARISON, TAPE_SPEEDS, COMPOSITE, AUDIO, INTERFERENCE, design/, images
+docs/                 RESEARCH, ARCHITECTURE, PLUGIN, PERFORMANCE, COMPARISON, PHYSICAL_MODELLING_RESEARCH,
+                      TAPE_SPEEDS, COMPOSITE, AUDIO, INTERFERENCE, design/, images
 scripts/gallery.sh    regenerate the gallery images
 scripts/features.sh   regenerate the feature images
 scripts/interference.sh  regenerate the interference images
