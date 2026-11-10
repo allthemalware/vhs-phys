@@ -46,8 +46,8 @@ vhsphys run in.mp4 out.mp4 --preset worn --config my_tape.toml
   of a render of the whole file. (Only the first frame of an excerpt differs a
   little, because it lacks the neighbouring frames the model looks at.)
 * The picture is processed as NTSC (29.97 fps, 754x480 active picture). ffmpeg
-  scales to that and back, so any input size/rate works. Audio is copied
-  untouched.
+  scales to that and back, so any input size/rate works. The linear audio track
+  is processed alongside the picture (or copied untouched with `--audio copy`).
 * About 11-14 frames per second on 8 cores (a 30 s 720p clip takes ~80 s; peak memory ~0.5 GB).
 
 ## Condition presets
@@ -117,6 +117,9 @@ right:
 
 ### The schematic
 
+![the circuit schematic](docs/img/schematic_circuit.jpg)
+![the outside-world schematic](docs/img/schematic_outside.jpg)
+
 The same controls can be shown as a phosphor-green electrical drawing: the **Schematic** button of the
 mode bar replaces the settings column by a drawing of the deck, the cassette and the TV, every control
 a labelled line with its value (drag a value, scroll over it, or click it and type). A second page,
@@ -184,6 +187,8 @@ Set with `--audio process|copy|none` (default `process`; `copy` leaves the input
 
 ## What is physically modelled
 
+![signal flow schematic](docs/img/signal_flow.png)
+
 ```
 frame -> NTSC raster (sync, burst, vsync, half-line field offset)
   -> record deck: luma bandwidth, 1.3 us emphasis, white/dark clip, FM 3.4-4.4 MHz,
@@ -205,12 +210,49 @@ frame -> NTSC raster (sync, burst, vsync, half-line field offset)
   -> optional composite stage: Y/C summed on the subcarrier and separated by a notch or comb
 ```
 
-The sound takes the same transport, supply, tape and head parameters (see docs/AUDIO.md), and `--generations` chains several decks.
+The sound takes the same transport, supply, tape and head parameters (see `docs/AUDIO.md`), and `--generations` chains several decks.
 
 Research notes, parameter provenance and sources: `docs/RESEARCH.md`.
 Architecture and numerical decisions: `docs/ARCHITECTURE.md`.
 Comparison with other projects and a roadmap beyond this prototype: `docs/COMPARISON.md`,
 `docs/PHYSICAL_MODELLING_RESEARCH.md`.
+
+## Comparison with filter chains (ntsc-rs)
+
+[ntsc-rs](https://ntsc.rs/) is a fast, polished analog-video effect: a signal-processing chain on
+YIQ fields that runs in real time and integrates cleanly with editing hosts. `vhs-phys` solves a
+different problem: by recording a 42.95 MS/s FM signal onto a 2D helical tape and reading it back
+through two physical heads and a deck, faults that are independent sliders in a filter chain emerge
+together from one physical parameter.
+
+![ntsc-rs vs vhs-phys on a fractal](docs/img/comparison_fractal.jpg)
+![ntsc-rs vs vhs-phys on colour bars](docs/img/comparison_bars.jpg)
+
+From top to bottom in both comparisons (left: `ntsc-rs` with matched fault modules; right: `vhs-phys`):
+
+1. **Clogged head (`dirty-heads` vs `snow` + `chroma_loss`)**: on a two-head helical drum, dirt on one
+   head lifts it off the oxide (`+extra_spacing_um`), attenuating the 3.4-4.4 MHz FM carrier by
+   Wallace's $54.6\,d/\lambda$ dB law on *every other field*. The clean head still reads its field
+   normally, while the clogged field drops below the RF envelope threshold and triggers the deck's
+   1H recirculating delay line (copying luma from the scanline above). A per-frame speckle pass sprays
+   independent horizontal dashes across both fields alike.
+2. **Mistracking (`mistracked` vs `tracking_noise` + `head_switching`)**: a 20 um lateral tracking
+   offset moves both heads across the 58 um helical track boundary into the neighbouring field's
+   track. Because the track slants across the tape, the envelope dip, azimuth-filtered crosstalk,
+   head-switch phase jump (6.5 lines before vsync) and top-of-field AFC flagging follow the track
+   geometry rather than sitting in a fixed Simplex-noise band at the bottom of the frame.
+3. **EP / SLP speed (`tape_speed = ep` vs `VHSTapeSpeed::EP`)**: in `ntsc-rs`, switching to EP lowers
+   two 1D IIR low-pass cut-offs (1.4 MHz luma, 280 kHz chroma) with a 6-pixel filter delay that
+   leaves a dark vertical border on the left edge. In `vhs-phys`, EP narrows the helical track pitch
+   from 58 um to 19.3 um (-4.8 dB carrier-to-noise ratio), applies IEC 60774-1 Table 4
+   sub-preemphasis, and shifts Head A's FM carrier by $+f_H/2$ so adjacent-track crosstalk
+   interleaves line by line.
+4. **Worn tape & deck (`worn` vs `luma_smear` + `vhs_settings`)**: a 3-pass causal IIR pixel smear blurs
+   high-contrast edges rightward in image space. In `vhs-phys`, edge ringing, white-clipping
+   overshoot, zero-crossing FM noise, fixed-height tape creases and 120 Hz capacitor-ESR hum bars all
+   come from the 3.4-4.4 MHz FM carrier, the 2D oxide map and the aged power supply.
+
+See [`docs/COMPARISON.md`](docs/COMPARISON.md) for a full breakdown of where each tool is ahead.
 
 ## Validation
 

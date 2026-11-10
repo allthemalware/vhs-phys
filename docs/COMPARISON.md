@@ -3,9 +3,11 @@
 [ntsc-rs](https://ntsc.rs/) is a fast, polished analog-video effect: a Rust signal-processing chain
 (about 19 passes on YIQ fields) that emulates composite NTSC and VHS-like artefacts, with a
 standalone app, a web app, OpenFX and After Effects / Premiere plugins and a command line tool.
-vhs-phys is a physical model of the tape, the heads and the deck. They solve different problems;
-this page says where each is ahead. The ntsc-rs side comes from its site and source (the
-settings list and the processing order of `ntsc.rs`), not from running it here.
+`vhs-phys` is a physical model of the tape, the heads and the deck. They solve different problems;
+this page shows where each is ahead.
+
+![ntsc-rs vs vhs-phys on a fractal](img/comparison_fractal.jpg)
+![ntsc-rs vs vhs-phys on colour bars](img/comparison_bars.jpg)
 
 ## Method
 
