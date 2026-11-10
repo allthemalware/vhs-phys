@@ -150,6 +150,14 @@ Conditions (`phone_mode`, `radio_mod`, `ground_loop_mv`, `crt_magnet`, ... ) are
 older preset; with everything off the output is bit-identical to a build without the module. The derivations,
 the equations and the list of estimated coefficients are in `docs/INTERFERENCE.md`.
 
+![each outside-world preset on colour bars](docs/img/features_interference_bars.jpg)
+
+![each outside-world preset on a still fractal](docs/img/features_interference_fractal.jpg)
+
+Still frames show the picture side only: the phone's buzz, the mains hum and the dimmer's crackle are in the
+sound, the hum bars and the dimmer marks move from frame to frame, and the single-sideband herringbone of
+`ham-radio` comes and goes with the speech (a steady carrier, `radio_mod = "cw"`, holds it still).
+
 ## Tape speeds, generations, composite and sound
 
 ### Tape speed
@@ -204,14 +212,18 @@ Architecture and numerical decisions: `docs/ARCHITECTURE.md`.
 
 ## Validation
 
-* 94 Rust tests (`cargo test --release`): carrier frequencies match the VHS
+* 154 Rust tests (`cargo test --release`): carrier frequencies match the VHS
   standard, the discriminator is exact, the chroma duty-cycle recording gain
   matches theory, spacing loss follows 54.6 dB per wavelength, the azimuth
   filter follows the sinc law, adjacent tracks are line aligned, creases sit at a
   fixed picture height, point defects slide 1.5 lines per field, repeated playback
   cleans debris, component ageing follows the 10-degree rule, sessions are
   deterministic and reproducible from any start frame, tape speed geometry,
-  composite separation, generations, audio bandwidth/wow/hum/dropouts.
+  composite separation, generations, audio bandwidth/wow/hum/dropouts; for the
+  outside world: field laws with distance, GSM burst timing, hum bars crawling at
+  the mains difference, dimmer marks at the firing times, a magnet's beam
+  deflection integrated along the tube, and an unchanged picture with all
+  sources off.
 * Python lab (`python/`): checks the closed-form head physics against a full
   numerical Karlqvist integration, and measures the real CLI end to end.
 
@@ -244,4 +256,5 @@ python/vhslab         reference physics, validation report, tuning and plotting 
 docs/                 RESEARCH, ARCHITECTURE, PLUGIN, PERFORMANCE, COMPARISON, TAPE_SPEEDS, COMPOSITE, AUDIO, INTERFERENCE, design/, images
 scripts/gallery.sh    regenerate the gallery images
 scripts/features.sh   regenerate the feature images
+scripts/interference.sh  regenerate the interference images
 ```

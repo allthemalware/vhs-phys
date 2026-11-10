@@ -341,7 +341,7 @@
    "kind": "slider",
    "unit": "V/m",
    "min": 0,
-   "max": 10,
+   "max": 40,
    "step": 0.1,
    "decimals": 1
   },

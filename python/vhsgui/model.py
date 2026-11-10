@@ -102,7 +102,7 @@ CONDITION_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("phone_distance_cm", "Phone distance", "Interference: phone and radio", "float", 2, 200, 1, "cm", "How far the phone is from the equipment. The field falls with distance, the rectified buzz with its square."),
     FieldSpec("radio_mod", "Radio", "Interference: phone and radio", "choice", help="A radio transmitter nearby: an AM broadcast, a plain carrier or single-sideband voice.", choices=("off", "am", "cw", "ssb")),
     FieldSpec("radio_freq_mhz", "Radio frequency", "Interference: phone and radio", "float", 0.5, 19, 0.05, "MHz", "Carrier frequency. Near 3.4 to 4.4 MHz it beats with the luma FM carrier, near 0.63 MHz with the colour-under carrier."),
-    FieldSpec("radio_field_vpm", "Radio field", "Interference: phone and radio", "float", 0, 10, 0.1, "V/m", "Field strength at the equipment, before the shielding of the case."),
+    FieldSpec("radio_field_vpm", "Radio field", "Interference: phone and radio", "float", 0, 40, 0.1, "V/m", "Field strength at the equipment, before the shielding of the case."),
     # ---- outside the circuit: mains and ground ----
     FieldSpec("mains_hz", "Mains frequency", "Interference: mains and ground", "float", 47, 63, 0.05, "Hz", "The real mains frequency. The video runs on its own crystal at 59.94 Hz, so hum bars crawl at the difference."),
     FieldSpec("mains_sag", "Mains sag", "Interference: mains and ground", "float", 0, 0.2, 0.005, "", "Fraction the mains is low (0.1 = 10 %); tips a tired supply into ripple."),

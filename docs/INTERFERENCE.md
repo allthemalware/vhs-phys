@@ -112,7 +112,7 @@ All are conditions (`[condition]` in a config file), off by default and in every
 | key | meaning | range |
 |---|---|---|
 | `phone_mode`, `phone_distance_cm` | `off`, `gsm`, `gprs`, `lte`; distance | 2 to 200 cm |
-| `radio_mod`, `radio_freq_mhz`, `radio_field_vpm` | `off`, `am`, `cw`, `ssb`; carrier; field at the equipment | 0.5 to 19 MHz, 0 to 10 V/m |
+| `radio_mod`, `radio_freq_mhz`, `radio_field_vpm` | `off`, `am`, `cw`, `ssb`; carrier; field at the equipment | 0.5 to 19 MHz, 0 to 40 V/m |
 | `mains_hz`, `mains_sag` | the real mains frequency; fractional sag | 47 to 63 Hz, 0 to 0.2 |
 | `ground_loop_mv`, `stray_field_ut`, `dimmer_angle_deg` | voltage between the grounds; stray field; firing angle (0 = none) | 0 to 500 mV, 0 to 200 uT, 0 to 170 deg |
 | `crt_magnet`, `crt_magnet_z_cm`, `crt_magnet_cm`, `crt_magnet_angle_deg` | `none`, `fridge`, `neodymium`, `speaker`; place along the tube from the gun; distance from the axis; angle around it | 0 to 35 cm, 0 to 40 cm, 0 to 360 deg |

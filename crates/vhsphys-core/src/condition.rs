@@ -245,12 +245,13 @@ impl Condition {
             "humid-attic" => Self { tape_age_years: 30.0, tape_storage: 1.0, deck_humidity: 0.9, ..d },
             // one outside mechanism each, on the otherwise pristine machine
             "phone-buzz" => Self { phone_mode: PhoneMode::Gsm, phone_distance_cm: 20.0, ..Self::pristine() },
-            "ham-radio" => Self { radio_mod: RadioMod::Ssb, radio_freq_mhz: 3.9, radio_field_vpm: 6.0, ..Self::pristine() },
+            // a legal-limit (1.5 kW) station 10 m away: sqrt(30 P G) / d is 27 V/m
+            "ham-radio" => Self { radio_mod: RadioMod::Ssb, radio_freq_mhz: 3.9, radio_field_vpm: 30.0, ..Self::pristine() },
             "am-station" => Self { radio_mod: RadioMod::Am, radio_freq_mhz: 0.9, radio_field_vpm: 6.0, ..Self::pristine() },
             // the mains of this room is off nominal, as a loaded line is
             "ground-loop" => Self { ground_loop_mv: 300.0, mains_hz: 59.4, ..Self::pristine() },
             "magnet-screen" => Self {
-                crt_magnet: MagnetKind::Neodymium, crt_magnet_z_cm: 33.0, crt_magnet_cm: 12.0, crt_magnet_angle_deg: 20.0, ..Self::pristine()
+                crt_magnet: MagnetKind::Neodymium, crt_magnet_z_cm: 33.0, crt_magnet_cm: 20.0, crt_magnet_angle_deg: 20.0, ..Self::pristine()
             },
             "magnet-head" => Self { head_magnet: MagnetKind::Neodymium, head_magnet_cm: 4.5, ..Self::pristine() },
             "dimmer" => Self { dimmer_angle_deg: 100.0, ..Self::pristine() },
