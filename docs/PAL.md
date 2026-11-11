@@ -8,8 +8,9 @@ the 525-line output stays bit-identical (`tests/golden.rs`).
 
 `config::build` in the `pal` engine accepts only `standard = "pal"`, always decodes with a PAL
 television (`decode.tv = "pal"`), and refuses `tape_speed = "ep"` and `composite.enabled` (see "Not
-modelled"). The 525-line engine refuses `standard = "pal"` (that is this engine) and a PAL television
-(PAL-60, not modelled yet).
+modelled"). The 525-line engine accepts `standard = "ntsc"` (NTSC television) and `standard =
+"pal60"` (PAL television, see "PAL-60"); it refuses `standard = "pal"` (that is this engine). In both
+engines the television follows the standard, and composite video into a PAL television is refused.
 
 ## Sources
 
@@ -91,6 +92,39 @@ equalising pulses, so the right part of the frame's last row (from about mid lin
 an off-nominal mains frequency as an offset from the default (`ground-loop`: 0.6 Hz low), so the
 525-line figures are unchanged.
 
+## PAL-60: an NTSC tape played into a PAL television
+
+`standard = "pal60"` in the 525-line engine. The tape, the mechanics and the deck's colour-under
+processing are all NTSC (the 1 H comb, the 180 deg burst, the NTSC APC); only the last step differs.
+A multi-standard deck puts the chroma on a 4.43 MHz subcarrier with the V axis switched line by line,
+and a PAL television decodes it. `config::build` sets `decode.tv = "pal"` for `pal60` and `"ntsc"`
+for `ntsc`, so the delay-line and `tv_phase_deg` settings of the section above apply unchanged.
+
+**Where the switch is made.** After the deck's own processing: the deck recovers the NTSC chroma
+(APC against the 180 deg burst, ACC, comb) and then conjugates the chroma phasor (V becomes -V) on
+every line whose global line index is odd (`record::pal60_switched`). The tape is not switched
+(`record::v_switched` stays false at 525 lines). The switch cannot come before the comb: it would
+turn the comb's wanted V into a difference and keep the crosstalk. As at 625 lines, a frame has an
+odd number of lines, so the sequence runs on from one frame into the next. The television is then
+the same as for 625 lines: the phasor turned by `tv_phase_deg`, then `standard::pal_delay_line`
+(or `standard::pal_simple` with `delay_line = false`) with that line's switch state.
+
+**Which errors PAL cancels here, and which not.** It depends on where the error enters, as at 625
+lines, but the tape sits on the other side of the switch:
+
+* a phase error that comes off the tape or the deck's NTSC processing (head-switch skew, timebase
+  jitter, a lagging APC) enters before the switch. The switch mirrors it with V (an error of +phi
+  reaches the television as -phi on the switched lines) and the television's un-switching turns it
+  back, so the picture sees the same hue error as an NTSC set would. PAL does not cancel it; the
+  delay line only averages it over two lines, which smooths error that changes from line to line
+  (a flat orange field through `worn` scatters its row hue about 6 % less than in NTSC).
+* a phase error in the television (`tv_phase_deg`, a drifted reference oscillator) enters after the
+  switch and is cancelled as at 625 lines: with the delay line it costs saturation (by cos phi)
+  and keeps the hue; without it, Hanover bars appear.
+
+So the same misadjusted set shows an NTSC tape's phase error as a hue shift when it is an NTSC set
+(it has a tint control for that) and as a saturation loss when it is a PAL set.
+
 ## Estimates `[est]`
 
 Carried over from the 525-line format without a 625-line source:
@@ -114,7 +148,6 @@ Carried over from the 525-line format without a 625-line source:
   and crosstalk, the doubled burst, no sub-emphasis.
 * **EP**: not part of the 625-line format; `config::build` refuses it.
 * **Composite PAL**: the composite stage (`composite.rs`) is an NTSC encoder and decoder; with a PAL
-  television `config::build` refuses `composite.enabled`.
-* **PAL-60** (a 525-line tape into a PAL television): a later step; the 525-line engine refuses it.
+  television (the 625-line engine or PAL-60) `config::build` refuses `composite.enabled`.
 * The 4.43 MHz subcarrier itself: as in the 525-line engine, the chroma is a complex baseband
   envelope from the camera to the television.

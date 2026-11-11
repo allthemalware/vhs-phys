@@ -6,7 +6,7 @@
 //! Accepted tables: `condition` (see `Condition`), `record`, `deck`, `decode`,
 //! `tape`, `mech`, `tracking`, `head` (both heads), `head0`, `head1`, and the
 //! top-level `seed` and `standard`. `build` refuses what the engine cannot play: another
-//! engine's standard, and EP in the 625-line engine.
+//! engine's standard, composite video into a PAL television, and EP in the 625-line engine.
 
 use super::condition::Condition;
 use super::consts::{HAS_EP, STANDARD};
@@ -96,27 +96,25 @@ pub fn build(preset: Option<&str>, text: &str, seed: u64) -> Result<Params, Stri
 }
 
 /// What this engine can play: the 625-line engine records and plays PAL only, into a PAL
-/// television; the 525-line engine plays NTSC into an NTSC television. A 525-line tape into a
-/// PAL television (PAL-60) and composite video into a PAL television are not modelled yet.
+/// television; the 525-line engine records NTSC and plays it into an NTSC television, or, with
+/// `standard = "pal60"`, into a PAL television. The television follows the standard (whatever
+/// `decode.tv` was set to). Composite video into a PAL television is not modelled yet.
 fn check_standard(mut p: Params) -> Result<Params, String> {
     match STANDARD {
         TvStandard::Pal => {
             if p.standard != TvStandard::Pal {
                 return Err(format!("the 625-line engine plays only standard = \"pal\" (got \"{}\")", p.standard.name()));
             }
-            p.decode.tv = ColourTv::Pal;
-            if p.composite.enabled {
-                return Err("composite video into a PAL television is not modelled yet".into());
-            }
         }
         _ => {
             if p.standard == TvStandard::Pal {
                 return Err("standard = \"pal\" is the 625-line engine, not a setting of the 525-line one".into());
             }
-            if p.standard == TvStandard::Pal60 || p.decode.tv == ColourTv::Pal {
-                return Err("a PAL television on a 525-line tape (PAL-60) is not modelled yet".into());
-            }
         }
+    }
+    p.decode.tv = p.standard.colour_tv();
+    if p.decode.tv == ColourTv::Pal && p.composite.enabled {
+        return Err("composite PAL is not modelled yet".into());
     }
     if p.speed == TapeSpeed::Ep && !HAS_EP {
         return Err("EP is not a 625-line VHS speed (SP and LP only)".into());
@@ -216,6 +214,25 @@ mod tests {
             assert_eq!(from_text[g].tape.passes, 3.0);
         }
         assert!(from_text[1].seed != 7 && from_text[2].seed != 7 && from_text[1].seed != from_text[2].seed);
+    }
+
+    #[test]
+    fn the_television_follows_the_standard() {
+        // an explicit `decode.tv` never overrides the standard's own television
+        let n = build(None, "[decode]\ntv = \"pal\"\n", 1);
+        if STANDARD == TvStandard::Pal {
+            assert_eq!(n.unwrap().decode.tv, ColourTv::Pal);
+            assert!(build(None, "standard = \"ntsc\"\n", 1).is_err());
+            assert!(build(None, "standard = \"pal60\"\n", 1).is_err());
+        } else {
+            let n = n.unwrap();
+            assert_eq!((n.standard, n.decode.tv), (TvStandard::Ntsc, ColourTv::Ntsc));
+            let p = build(None, "standard = \"pal60\"\n[decode]\ntv = \"ntsc\"\n", 1).unwrap();
+            assert_eq!((p.standard, p.decode.tv), (TvStandard::Pal60, ColourTv::Pal));
+            assert!(build(None, "standard = \"pal\"\n", 1).is_err());
+            assert!(build(None, "standard = \"pal60\"\n[composite]\nenabled = true\n", 1).is_err());
+            assert!(build(None, "[composite]\nenabled = true\n", 1).is_ok());
+        }
     }
 
     #[test]

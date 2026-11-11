@@ -12,7 +12,8 @@
 //!   lines, 2 H at 625);
 //! * the television then decodes the deck's chroma against its own colour reference
 //!   (off by `tv_phase_deg`): an NTSC set takes the phasor as U + jV, a PAL set
-//!   un-switches V and, with its delay line, averages each line with the one before;
+//!   un-switches V and, with its delay line, averages each line with the one before.
+//!   On a 525-line tape (PAL-60) the deck switches V itself, after its own colour processing;
 //! * optionally, the picture then goes through a composite cable and the TV's Y/C
 //!   separator (`composite`) before it is converted to RGB.
 
@@ -24,7 +25,7 @@ use crate::dsp::*;
 use super::interference::video_line_terms;
 use crate::interference_params::InterferenceParams;
 use crate::standard::{self, ColourTv, TvStandard};
-use super::record::{line_rotation, v_switched, CU_WHOLE_CYCLES_PER_LINE};
+use super::record::{line_rotation, pal60_switched, v_switched, CU_WHOLE_CYCLES_PER_LINE};
 use super::video::{decode_ideal, Baseband, Frame};
 use std::f64::consts::PI;
 
@@ -165,8 +166,19 @@ fn burst_angle(line: i64) -> f64 {
     }
 }
 
+/// Whether the deck's output carries V inverted on global line `line`. A 625-line tape is
+/// recorded switched and the deck passes the switch on; a multi-standard deck playing a 525-line
+/// tape into a PAL television (PAL-60) makes the switch itself, after its colour processing.
+/// Otherwise the output is not switched.
+fn output_switched(line: i64, p: &DecodeParams) -> bool {
+    match STANDARD {
+        TvStandard::Pal => v_switched(line),
+        _ => p.tv == ColourTv::Pal && pal60_switched(line),
+    }
+}
+
 /// The television's colour decoding of one line of the deck's chroma `cur` (its phasor per
-/// pixel, V still switched on a PAL tape); `prev` is the line before it in the same field and
+/// pixel, V still switched on a PAL tape or on a PAL-60 deck's output); `prev` is the line before it in the same field and
 /// `switched` whether V is inverted on this line. Returns `None` where the set passes the
 /// phasor on untouched as U + jV (an NTSC set whose colour reference is exactly right).
 fn television(cur: &[[f32; 2]], prev: Option<&[[f32; 2]]>, switched: bool, p: &DecodeParams) -> Option<Vec<[f32; 2]>> {
@@ -337,7 +349,8 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
         }
         // the deck's comb: the crosstalk from the neighbouring tracks cancels between line n
         // and line n - COMB_LINES, where the wanted chroma (and, at 625 lines, its V switch) is alike
-        let deck_out: Vec<Vec<[f32; 2]>> = (0..FIELD_ACTIVE_LINES)
+        let first_line = k * LINES as i64 + FIELD_FIRST_LINE[field] as i64;
+        let mut deck_out: Vec<Vec<[f32; 2]>> = (0..FIELD_ACTIVE_LINES)
             .map(|j| {
                 if p.comb && j >= COMB_LINES {
                     let (cur, old) = (&chroma_lines[j], &chroma_lines[j - COMB_LINES]);
@@ -347,11 +360,23 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
                 }
             })
             .collect();
-        let first_line = k * LINES as i64 + FIELD_FIRST_LINE[field] as i64;
+        // PAL-60: the multi-standard deck forms its 4.43 MHz output from the NTSC chroma it has just
+        // recovered, so the V switch comes after the APC and the comb (before the comb it would
+        // cancel V instead of the crosstalk). A phase error that came off the tape is mirrored with V
+        // on the switched lines; the television's PAL decoder only averages it over two lines.
+        if STANDARD != TvStandard::Pal && p.tv == ColourTv::Pal {
+            for (j, line) in deck_out.iter_mut().enumerate() {
+                if pal60_switched(first_line + j as i64) {
+                    for c in line.iter_mut() {
+                        c[1] = -c[1];
+                    }
+                }
+            }
+        }
         for j in 0..FIELD_ACTIVE_LINES {
             let base = (FIELD_FIRST_LINE[field] + j) * BB_PER_LINE + ACTIVE_START;
             let prev = if j > 0 { Some(deck_out[j - 1].as_slice()) } else { None };
-            let tv = television(&deck_out[j], prev, v_switched(first_line + j as i64), p);
+            let tv = television(&deck_out[j], prev, output_switched(first_line + j as i64, p), p);
             for x in 0..ACTIVE_W {
                 let c = tv.as_ref().map_or(deck_out[j][x], |t| t[x]);
                 planes.y[base + x] = luma_lines[j][x];
