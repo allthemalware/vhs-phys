@@ -5,6 +5,7 @@ widgets and the glue that polls background jobs from a timer.
 """
 from __future__ import annotations
 
+import math
 import os
 import random
 import shutil
@@ -12,18 +13,22 @@ import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from PySide6.QtCore import QEventLoop, QRect, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QEventLoop, QPointF, QRect, QRectF, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import (
+    QBrush,
     QCloseEvent,
     QColor,
     QDesktopServices,
+    QFont,
     QFontDatabase,
     QImage,
+    QKeyEvent,
     QKeySequence,
     QMouseEvent,
     QPainter,
     QPaintEvent,
     QPen,
+    QPolygonF,
     QShortcut,
 )
 from PySide6.QtWidgets import (
@@ -48,6 +53,7 @@ from PySide6.QtWidgets import (
     QSlider,
     QSpinBox,
     QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -85,10 +91,17 @@ LEFT_MIN_WIDTH = 340  # the controls scroll below this width instead of squeezin
 PREVIEW_MIN_SIZE = (320, 200)
 PREVIEW_BACKGROUND = "#141414"
 DETACHED_PREVIEW_SIZE = (760, 520)  # default size of the detached preview window
-ABOUT_DIALOG_SIZE = (560, 440)  # dimensions of the about dialog
+ABOUT_DIALOG_SIZE = (980, 680)  # dimensions of the about dialog with interactive flow canvas
 ABOUT_TITLE = "About vhs-phys"
 KOFI_URL = "https://ko-fi.com/allthemalware"
 GITHUB_URL = "https://github.com/allthemalware/vhs-phys"
+PHOSPHOR_BG = "#010804"
+PHOSPHOR_FAINT = "#0e4a22"
+PHOSPHOR_DIM = "#1c9a45"
+PHOSPHOR_NORM = "#39ff6e"
+PHOSPHOR_HOT = "#d8ffe3"
+PHOSPHOR_WARN = "#ffb347"
+PHOSPHOR_GRID = "#061a0c"
 ERROR_STYLE = "color: #c0392b;"
 
 POLL_MS = 100  # how often running jobs are looked at
@@ -357,6 +370,552 @@ class DetachedPreviewWindow(QWidget):
         event.accept()
 
 
+@dataclass(frozen=True)
+class FlowSection:
+    key: str
+    number: str
+    title: str
+    domain: str
+    summary: str
+    parts: tuple[tuple[str, str], ...]
+    equations: tuple[str, ...]
+    parameters: tuple[tuple[str, str], ...]
+
+
+FLOW_SECTIONS: tuple[FlowSection, ...] = (
+    FlowSection(
+        key="camera",
+        number="01",
+        title="SOURCE & CAMERA STAGE",
+        domain="Photoelectric Target & Rasterization",
+        summary="Converts scene irradiance through photoconductive pickup tubes into gamma-corrected baseband video signals.",
+        parts=(
+            ("Photoconductive Target", "Semiconductor target (PbO/Sb2S3) integrating photon charge per pixel element."),
+            ("ACT Electron Gun", "Anti-comet-tail electron beam discharging overload highlights during flyback."),
+            ("Light Bias LED", "Sub-threshold illumination flooding target to eliminate dark-state transit lag."),
+            ("Gamma OETF & Matrix", "Applies transfer exponent and matrices RGB into Y, Cu, Cv baseband with sync."),
+        ),
+        equations=(
+            "i_photo = I_0 * OETF^-1(V_in) * 2^(iris_stops)",
+            "dq/dt = i_photo - i_beam(q)",
+            "V_out = OETF((s_read - black) / peak_na)",
+        ),
+        parameters=(
+            ("camera.tube", "Tube selection: plumbicon, plumbicon-bias, plumbicon-act, vidicon, saticon"),
+            ("camera.iris_stops", "Optical exposure offset (stops; positive overexposes to highlight comet tails)"),
+            ("camera.beam_ratio", "ACT beam reserve capacity multiplier above peak white (nominal: 2.0)"),
+            ("standard", "Raster standard: NTSC (525/29.97), PAL (625/25), or PAL-60"),
+        ),
+    ),
+    FlowSection(
+        key="modulator",
+        number="02",
+        title="FM LUMA & COLOUR-UNDER",
+        domain="Direct FM Synthesis & Heterodyne Chroma",
+        summary="Synthesizes direct FM RF carrier for luminance and heterodyne downconverted subcarrier for chrominance.",
+        parts=(
+            ("Pre-Emphasis Network", "High-frequency boost (+8 dB main shelf, sub-emphasis at LP/EP) for FM noise immunity."),
+            ("FM Video Modulator", "Astable multivibrator mapping active IRE level to instantaneous RF carrier frequency."),
+            ("Colour-Under Mixer", "Heterodynes 3.58/4.43 MHz subcarrier down to 629.37 kHz with alternating +/-90 deg rotation."),
+            ("Direct Duty Combiner", "Superimposes colour-under chroma as duty-cycle modulation of the saturated FM carrier."),
+        ),
+        equations=(
+            "f_carrier(t) = f_sync + IRE(t) * (f_white - f_sync)",
+            "f_chroma = 40 * f_line = 629.37 kHz (NTSC / PAL)",
+            "s_rec(t) = sgn(sin(phi_FM(t)) + k_chroma * s_chroma(t))",
+        ),
+        parameters=(
+            ("record.luma_carrier_mhz", "Nominal sync-tip/white carrier (3.4-4.4 MHz NTSC, 3.8-4.8 MHz PAL)"),
+            ("record.sub_emphasis", "Sub-emphasis network for LP/EP tape speeds"),
+            ("record.chroma_level", "Colour-under amplitude injection ratio"),
+            ("speed", "Tape transport speed: SP, LP, EP (sets subcarrier interleave & track pitch)"),
+        ),
+    ),
+    FlowSection(
+        key="head_record",
+        number="03",
+        title="RECORDING HEAD & COERCIVITY",
+        domain="Electromagnetic Saturation & Transition Relay",
+        summary="Drives ferrite pole tips to magnetic saturation, recording transition reversals at coercive boundaries.",
+        parts=(
+            ("Ferrite Core Gap", "Concentrates recording flux into tape coating layer past magnetic saturation."),
+            ("Coercive Relay Model", "Resolves sub-sample boundary points x_i where head fringe field equals coercivity H_c."),
+            ("Self-Demagnetisation", "Opposing magnetic poles broaden transition width: a = (2 * M_r * d) / H_c."),
+            ("Azimuth Angle Offset", "Helical head gaps angled at +6 deg and -6 deg to eliminate need for guard bands."),
+        ),
+        equations=(
+            "H_head(x, y) >= H_c ==> M(x) = +M_s (or -M_s)",
+            "a = (2 * M_r * d) / H_c (Transition width parameter)",
+            "theta_azimuth = +/- 6.0 deg",
+        ),
+        parameters=(
+            ("tape.coercivity_oe", "Tape magnetic coercivity (650-900 Oe)"),
+            ("heads[i].width_um", "Physical recording head pole width"),
+            ("speed.adjacent_track_offset_rf", "Subcarrier advance between adjacent helical passes"),
+        ),
+    ),
+    FlowSection(
+        key="tape_medium",
+        number="04",
+        title="2D HELICAL TAPE MEDIUM",
+        domain="Spatial Helical Geometry & Defect Fields",
+        summary="Represents the physical magnetic tape surface in 2D helical coordinates with oxide voids and mechanical creasing.",
+        parts=(
+            ("Helical Track Matrix", "2D surface coordinates mapped onto 3.1 deg (NTSC) / 3.3 deg (PAL) angled tracks."),
+            ("Oxide Defect Field", "Spatial Poisson point-process generating oxide dropouts, coating pinholes, and flake-offs."),
+            ("Tape Creases & Crinkles", "Mechanical edge crinkles and transport wrinkles generating periodic carrier loss."),
+            ("Magnetic Spacing Profile", "Surface roughness and microscopic debris creating dynamic spacing fluctuations."),
+        ),
+        equations=(
+            "P(k defects in area A) = ((lambda * A)^k * e^(-lambda * A)) / k!",
+            "theta_track = 3.1 deg (NTSC) / 3.3 deg (PAL)",
+            "Track length = half drum circumference = 97.4 mm",
+        ),
+        parameters=(
+            ("tape.defects_per_mm2", "Oxide defect density triggering dropout compensation"),
+            ("tape.crinkle_density_per_m", "Longitudinal creasing density per meter of tape"),
+            ("tape.roughness_um", "Surface roughness inducing magnetic spacing noise"),
+        ),
+    ),
+    FlowSection(
+        key="readback",
+        number="05",
+        title="READBACK & KARLQVIST RECIPROCITY",
+        domain="Lorentzian Pulse Summation & Spacing Loss",
+        summary="Integrates playback flux using Karlqvist reciprocity, Lorentzian pulse summation, Wallace spacing, and azimuth rejection.",
+        parts=(
+            ("Karlqvist Reciprocity", "Integrates magnetic transition reversals via head fringe field potential."),
+            ("Lorentzian Pulses", "Each isolated transition produces an impulse: e(t) = v * h_0 / (h_0^2 + (v*t - x)^2)."),
+            ("Wallace Spacing Loss", "Exponential attenuation of short-wavelength RF: 54.6 * d / lambda dB."),
+            ("Azimuth Crosstalk Law", "Sinc attenuation law cancels opposite-azimuth crosstalk from adjacent tracks."),
+            ("Head Preamplifier", "Resonant LC tank (head coil + rotary transformer) with thermal Johnson-Nyquist noise."),
+        ),
+        equations=(
+            "e(t) = sum_i (v * h_0) / (h_0^2 + (v*t - x_i)^2)",
+            "Loss_spacing = 54.6 * (d / lambda) dB",
+            "Atten_azimuth = |sinc(pi * W * tan(2*theta) / lambda)|",
+        ),
+        parameters=(
+            ("heads[i].extra_spacing_um", "Dynamic head gap debris / clogging spacing loss"),
+            ("heads[i].h0_um", "Nominal pulse half-width (gap + transition width)"),
+            ("heads[i].cnr_db", "Head carrier-to-noise ratio in 6 MHz bandwidth"),
+            ("tracking.offset_um", "Mean lateral head-to-track displacement (um)"),
+            ("tracking.wander_um", "Capstan servo wandering / tracking jitter rms"),
+        ),
+    ),
+    FlowSection(
+        key="mechanics",
+        number="06",
+        title="TIMEBASE & MECHANICAL TRANSPORT",
+        domain="Capstan Servo, Flutter & Drum Phase",
+        summary="Applies multi-band mechanical wow, flutter, drum rotational jitter, tape tension skew, and head switching.",
+        parts=(
+            ("Drum & Capstan Servos", "Multi-band colored noise (0.1-100 Hz) inducing timebase perturbation e(t)."),
+            ("Head Switching Pulse", "Switches active playback head 6.5 lines ahead of vertical sync, producing bottom glitch."),
+            ("Tape Tension & Skew", "Back-tension mismatch warping line duration at top of frame (flagging)."),
+            ("Capstan Slip & Wander", "Low-frequency speed drift causing slow vertical roll and tracking wander."),
+        ),
+        equations=(
+            "t_playback = t_nominal + e(t)",
+            "e(t) = sum_k A_k * sin(2*pi*f_k*t + phi_k) + Wander(t)",
+            "Switch time = 6.5 H before vertical blanking",
+        ),
+        parameters=(
+            ("mech.flutter_rms", "Wow and flutter root-mean-square amplitude"),
+            ("mech.tension_offset", "Longitudinal tape tension offset (causes top flagging)"),
+            ("mech.head_switch_delay", "Drum head switch trigger position"),
+        ),
+    ),
+    FlowSection(
+        key="deck_rf",
+        number="07",
+        title="DECK RF ELECTRONICS & DEMOD",
+        domain="RF Equalisation, DOC & Limiter Discriminator",
+        summary="Reconstructs luminance via RF peaking biquads, 1H dropout recirculation, limiter, and delay-line discriminator.",
+        parts=(
+            ("RF Peaking Equaliser", "Equalises high-frequency carrier loss with resonant biquad filters."),
+            ("1H Dropout Compensator", "Detects carrier amplitude loss below threshold and recirculates previous line."),
+            ("Saturating Limiter", "Strips AM noise from the FM carrier before demodulation."),
+            ("FM Delay-Line Discriminator", "Phase-multiplies carrier with 90-degree delayed copy to linearize frequency-to-IRE."),
+            ("Main De-Emphasis", "Restores original flat baseband spectrum, inverting +8 dB high-pass pre-emphasis."),
+        ),
+        equations=(
+            "V_demod(t) = k * (d phi / dt) = 2*pi * f(t)",
+            "DOC(t) = s_RF(t) if A_carrier >= V_thresh else s_RF(t - 1H)",
+        ),
+        parameters=(
+            ("deck.fm_gain", "RF preamplifier gain into limiter stage"),
+            ("deck.doc_threshold", "Dropout compensator trigger sensitivity threshold"),
+            ("deck.eq_peaks", "Equaliser biquad peaking frequencies, Q, and gain"),
+            ("deck.limiter_drive", "Limiter clipping drive level"),
+        ),
+    ),
+    FlowSection(
+        key="display",
+        number="08",
+        title="CHROMA DEMOD & CRT DISPLAY",
+        domain="2H Comb Decoder, Sync AFC & Phosphor Decay",
+        summary="Separates Y/C, restores chroma subcarrier, extracts sync with AFC flywheel, and emulates CRT phosphor decay.",
+        parts=(
+            ("Colour-Under Demodulator", "Heterodynes 629 kHz back to 3.58/4.43 MHz and reverses +/-90 deg line phase rotation."),
+            ("1H/2H Comb & Notch Decoder", "Cancels adjacent-track chroma crosstalk and separates Y/C."),
+            ("Sync Slicer & AFC Flywheel", "Slices sync tips and flywheel-stabilizes horizontal deflection."),
+            ("CRT Shadow Mask & Phosphor", "Emulates RGB phosphor triads and multi-exponential phosphorescence decay across fields."),
+        ),
+        equations=(
+            "I_phosphor(t) = I_0 * sum_j (c_j * e^(-t / tau_j))",
+            "Comb_PAL(t) = 0.5 * (s(t) + s(t - 2H))",
+            "Comb_NTSC(t) = 0.5 * (s(t) - s(t - 1H))",
+        ),
+        parameters=(
+            ("composite.decoder", "Chroma separation filter: 'notch', 'comb1h', 'comb2h'"),
+            ("decode.sync_slice_level", "Sync slicer voltage threshold"),
+            ("CRT Phosphor Decay", "P22 red (0.4 ms), green (1.5 ms), and blue (0.1 ms) decay lag"),
+        ),
+    ),
+)
+
+
+def _draw_flow_arrow(painter: QPainter, p1: QPointF, p2: QPointF, color: QColor) -> None:
+    painter.setPen(QPen(color, 1.8))
+    painter.drawLine(p1, p2)
+    dx = p2.x() - p1.x()
+    dy = p2.y() - p1.y()
+    length = math.hypot(dx, dy)
+    if length > 0.001:
+        ux = dx / length
+        uy = dy / length
+        hl = 7.0
+        hw = 4.0
+        px = -uy
+        py = ux
+        p_left = QPointF(p2.x() - hl * ux + hw * px, p2.y() - hl * uy + hw * py)
+        p_right = QPointF(p2.x() - hl * ux - hw * px, p2.y() - hl * uy - hw * py)
+        painter.setBrush(QBrush(color))
+        painter.drawPolygon(QPolygonF([p2, p_left, p_right]))
+
+
+class PhosphorFlowView(QWidget):
+    """Interactive phosphor green flow canvas displaying the first-principles simulation pipeline.
+
+    Clicking any stage zooms into that section to reveal internal physical mechanisms,
+    governing equations, and exact simulation parameters.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("phosphorFlowView")
+        self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._selected_idx: int | None = None
+        self._hovered_idx: int | None = None
+        self._block_rects: list[QRectF] = [QRectF() for _ in range(len(FLOW_SECTIONS))]
+        self._back_rect = QRectF()
+
+    def zoom_to_section(self, index: int | None) -> None:
+        self._selected_idx = index
+        self.update()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        pos = event.position()
+        if self._selected_idx is None:
+            for idx, r in enumerate(self._block_rects):
+                if r.contains(pos):
+                    self._selected_idx = idx
+                    self.update()
+                    event.accept()
+                    return
+        else:
+            if self._back_rect.contains(pos):
+                self._selected_idx = None
+                self.update()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        pos = event.position()
+        if self._selected_idx is None:
+            hovered = None
+            for idx, r in enumerate(self._block_rects):
+                if r.contains(pos):
+                    hovered = idx
+                    break
+            if hovered != self._hovered_idx:
+                self._hovered_idx = hovered
+                self.setCursor(Qt.CursorShape.PointingHandCursor if hovered is not None else Qt.CursorShape.ArrowCursor)
+                self.update()
+        else:
+            if self._back_rect.contains(pos):
+                self.setCursor(Qt.CursorShape.PointingHandCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape and self._selected_idx is not None:
+            self._selected_idx = None
+            self.update()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = float(self.width()), float(self.height())
+
+        # Background & CRT scanline grid
+        painter.fillRect(QRectF(0, 0, w, h), QColor(PHOSPHOR_BG))
+        painter.setPen(QPen(QColor(10, 42, 18, 60), 1.0))
+        for gy in range(0, int(h), 22):
+            painter.drawLine(0, gy, int(w), gy)
+        for gx in range(0, int(w), 32):
+            painter.drawLine(gx, 0, gx, int(h))
+
+        if self._selected_idx is None:
+            self._paint_overview(painter, w, h)
+        else:
+            self._paint_zoomed(painter, w, h, self._selected_idx)
+        painter.end()
+
+    def _paint_overview(self, painter: QPainter, w: float, h: float) -> None:
+        font_mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        font_mono.setPointSize(9)
+        painter.setFont(font_mono)
+
+        # Header title
+        painter.setPen(QPen(QColor(PHOSPHOR_HOT)))
+        painter.drawText(
+            QRectF(20, 14, w - 40, 22),
+            Qt.AlignmentFlag.AlignCenter,
+            "--- VHS-PHYS PHYSICAL SIMULATION PIPELINE (CLICK ANY STAGE TO ZOOM IN) ---",
+        )
+
+        margin_x = 22.0
+        margin_y = 44.0
+        gap_x = 18.0
+        gap_y = 38.0
+        cols = 4
+        rows = 2
+        block_w = (w - 2 * margin_x - (cols - 1) * gap_x) / cols
+        block_h = (h - margin_y - 48.0 - gap_y) / rows
+
+        # Assign grid cells:
+        # Row 0 (L -> R): stages 0, 1, 2, 3
+        # Row 1 (R -> L): stages 4, 5, 6, 7
+        grid_pos = [
+            (0, 0),  # 0
+            (1, 0),  # 1
+            (2, 0),  # 2
+            (3, 0),  # 3
+            (3, 1),  # 4
+            (2, 1),  # 5
+            (1, 1),  # 6
+            (0, 1),  # 7
+        ]
+
+        for idx, (c, r) in enumerate(grid_pos):
+            bx = margin_x + c * (block_w + gap_x)
+            by = margin_y + r * (block_h + gap_y)
+            self._block_rects[idx] = QRectF(bx, by, block_w, block_h)
+
+        # Connecting arrows between consecutive stages
+        arrow_color = QColor(PHOSPHOR_DIM)
+        for i in range(len(FLOW_SECTIONS) - 1):
+            r1 = self._block_rects[i]
+            r2 = self._block_rects[i + 1]
+            if i in (0, 1, 2):
+                p1 = QPointF(r1.right() + 2, r1.center().y())
+                p2 = QPointF(r2.left() - 2, r2.center().y())
+            elif i == 3:
+                p1 = QPointF(r1.center().x(), r1.bottom() + 2)
+                p2 = QPointF(r2.center().x(), r2.top() - 2)
+            else:
+                p1 = QPointF(r1.left() - 2, r1.center().y())
+                p2 = QPointF(r2.right() + 2, r2.center().y())
+            _draw_flow_arrow(painter, p1, p2, arrow_color)
+
+        # Draw stage blocks
+        for idx, s in enumerate(FLOW_SECTIONS):
+            r = self._block_rects[idx]
+            is_hovered = self._hovered_idx == idx
+
+            bg_col = QColor(14, 56, 26, 210) if is_hovered else QColor(5, 20, 10, 180)
+            border_col = QColor(PHOSPHOR_NORM if is_hovered else PHOSPHOR_DIM)
+            border_width = 2.0 if is_hovered else 1.2
+
+            painter.setBrush(QBrush(bg_col))
+            painter.setPen(QPen(border_col, border_width))
+            painter.drawRoundedRect(r, 6.0, 6.0)
+
+            # Badge
+            badge_rect = QRectF(r.left() + 8, r.top() + 8, 38, 18)
+            painter.setBrush(QBrush(QColor(PHOSPHOR_FAINT)))
+            painter.setPen(QPen(QColor(PHOSPHOR_DIM), 1.0))
+            painter.drawRoundedRect(badge_rect, 3.0, 3.0)
+            painter.setPen(QPen(QColor(PHOSPHOR_HOT)))
+            painter.drawText(badge_rect, Qt.AlignmentFlag.AlignCenter, s.number)
+
+            # Title
+            painter.setPen(QPen(QColor(PHOSPHOR_NORM if not is_hovered else PHOSPHOR_HOT)))
+            f_title = QFont(font_mono)
+            f_title.setBold(True)
+            painter.setFont(f_title)
+            title_rect = QRectF(r.left() + 52, r.top() + 8, r.width() - 58, 20)
+            painter.drawText(title_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, s.title)
+
+            # Domain
+            f_domain = QFont(font_mono)
+            f_domain.setPointSize(8)
+            painter.setFont(f_domain)
+            painter.setPen(QPen(QColor(PHOSPHOR_DIM if not is_hovered else PHOSPHOR_NORM)))
+            domain_rect = QRectF(r.left() + 8, r.top() + 30, r.width() - 16, 16)
+            painter.drawText(domain_rect, Qt.AlignmentFlag.AlignLeft, s.domain)
+
+            # Summary snippet
+            painter.setPen(QPen(QColor("#a2e6b2")))
+            summary_rect = QRectF(r.left() + 8, r.top() + 50, r.width() - 16, r.height() - 74)
+            painter.drawText(summary_rect, Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap, s.summary)
+
+            # Click hint
+            painter.setPen(QPen(QColor(PHOSPHOR_HOT if is_hovered else PHOSPHOR_FAINT)))
+            hint_rect = QRectF(r.left() + 8, r.bottom() - 20, r.width() - 16, 16)
+            painter.drawText(hint_rect, Qt.AlignmentFlag.AlignRight, "[CLICK TO INSPECT]" if is_hovered else "[INSPECT]")
+
+        # Footer
+        painter.setFont(font_mono)
+        painter.setPen(QPen(QColor(PHOSPHOR_DIM)))
+        painter.drawText(
+            QRectF(20, h - 30, w - 40, 20),
+            Qt.AlignmentFlag.AlignCenter,
+            "FIRST-PRINCIPLES PHYSICAL SIMULATION • CONTINUOUS EMERGENCE • NO HEURISTIC FILTERS",
+        )
+
+    def _paint_zoomed(self, painter: QPainter, w: float, h: float, idx: int) -> None:
+        s = FLOW_SECTIONS[idx]
+        font_mono = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
+        font_mono.setPointSize(9)
+        painter.setFont(font_mono)
+
+        # Back button
+        self._back_rect = QRectF(20, 14, 210, 28)
+        painter.setBrush(QBrush(QColor(14, 52, 24)))
+        painter.setPen(QPen(QColor(PHOSPHOR_NORM), 1.5))
+        painter.drawRoundedRect(self._back_rect, 4.0, 4.0)
+        painter.setPen(QPen(QColor(PHOSPHOR_HOT)))
+        painter.drawText(self._back_rect, Qt.AlignmentFlag.AlignCenter, "◄ BACK TO OVERVIEW (ESC)")
+
+        # Breadcrumbs
+        f_crumb = QFont(font_mono)
+        f_crumb.setBold(True)
+        painter.setFont(f_crumb)
+        painter.setPen(QPen(QColor(PHOSPHOR_HOT)))
+        painter.drawText(
+            QRectF(244, 18, w - 264, 20),
+            Qt.AlignmentFlag.AlignLeft,
+            f"OVERVIEW  >>  STAGE {s.number}: {s.title}",
+        )
+
+        # Main columns
+        top_y = 50.0
+        bottom_y = h - 32.0
+        col_h = bottom_y - top_y
+        gap = 16.0
+        col_w1 = (w - 40.0 - gap) * 0.54
+        col_w2 = (w - 40.0 - gap) * 0.46
+        x1 = 20.0
+        x2 = x1 + col_w1 + gap
+
+        # Left Column: Circuit Architecture & Components
+        r_left = QRectF(x1, top_y, col_w1, col_h)
+        painter.setBrush(QBrush(QColor(4, 18, 8, 200)))
+        painter.setPen(QPen(QColor(PHOSPHOR_DIM), 1.2))
+        painter.drawRoundedRect(r_left, 6.0, 6.0)
+
+        cy = top_y + 12.0
+        painter.setPen(QPen(QColor(PHOSPHOR_NORM)))
+        painter.drawText(QRectF(x1 + 14, cy, col_w1 - 28, 18), Qt.AlignmentFlag.AlignLeft, f"DOMAIN: {s.domain}")
+        cy += 20.0
+
+        painter.setPen(QPen(QColor("#c8ffd8")))
+        painter.drawText(QRectF(x1 + 14, cy, col_w1 - 28, 36), Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap, s.summary)
+        cy += 42.0
+
+        painter.setPen(QPen(QColor(PHOSPHOR_HOT)))
+        painter.drawText(QRectF(x1 + 14, cy, col_w1 - 28, 16), Qt.AlignmentFlag.AlignLeft, "INTERNAL STAGE COMPONENTS:")
+        cy += 20.0
+
+        f_small = QFont(font_mono)
+        f_small.setPointSize(8)
+        for part_name, part_desc in s.parts:
+            painter.setFont(font_mono)
+            painter.setPen(QPen(QColor(PHOSPHOR_NORM)))
+            painter.drawText(QRectF(x1 + 18, cy, col_w1 - 36, 16), Qt.AlignmentFlag.AlignLeft, f"► {part_name}")
+            cy += 16.0
+            painter.setFont(f_small)
+            painter.setPen(QPen(QColor("#a8e2b8")))
+            painter.drawText(QRectF(x1 + 28, cy, col_w1 - 46, 30), Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap, part_desc)
+            cy += 32.0
+
+        # Governing Equations Box
+        eq_box = QRectF(x1 + 14, r_left.bottom() - 110, col_w1 - 28, 96)
+        painter.setBrush(QBrush(QColor(2, 10, 4, 230)))
+        painter.setPen(QPen(QColor(PHOSPHOR_FAINT), 1.0))
+        painter.drawRoundedRect(eq_box, 4.0, 4.0)
+
+        painter.setFont(f_small)
+        painter.setPen(QPen(QColor(PHOSPHOR_HOT)))
+        painter.drawText(QRectF(eq_box.left() + 8, eq_box.top() + 6, eq_box.width() - 16, 16), Qt.AlignmentFlag.AlignLeft, "GOVERNING EQUATIONS:")
+        eq_y = eq_box.top() + 24.0
+        painter.setPen(QPen(QColor(PHOSPHOR_NORM)))
+        for eq in s.equations:
+            painter.drawText(QRectF(eq_box.left() + 12, eq_y, eq_box.width() - 20, 16), Qt.AlignmentFlag.AlignLeft, f"● {eq}")
+            eq_y += 18.0
+
+        # Right Column: Controlling Simulation Parameters
+        r_right = QRectF(x2, top_y, col_w2, col_h)
+        painter.setBrush(QBrush(QColor(4, 18, 8, 200)))
+        painter.setPen(QPen(QColor(PHOSPHOR_DIM), 1.2))
+        painter.drawRoundedRect(r_right, 6.0, 6.0)
+
+        py = top_y + 12.0
+        painter.setFont(font_mono)
+        painter.setPen(QPen(QColor(PHOSPHOR_HOT)))
+        painter.drawText(QRectF(x2 + 14, py, col_w2 - 28, 18), Qt.AlignmentFlag.AlignLeft, "SIMULATION PARAMETERS & HOOKS:")
+        py += 22.0
+
+        painter.setFont(f_small)
+        painter.setPen(QPen(QColor(PHOSPHOR_DIM)))
+        painter.drawText(QRectF(x2 + 14, py, col_w2 - 28, 16), Qt.AlignmentFlag.AlignLeft, "Configuration keys mapped to this stage:")
+        py += 22.0
+
+        for param_key, param_info in s.parameters:
+            badge_r = QRectF(x2 + 14, py, col_w2 - 28, 22)
+            painter.setBrush(QBrush(QColor(8, 36, 16)))
+            painter.setPen(QPen(QColor(PHOSPHOR_FAINT), 1.0))
+            painter.drawRoundedRect(badge_r, 4.0, 4.0)
+
+            painter.setFont(font_mono)
+            painter.setPen(QPen(QColor(PHOSPHOR_HOT)))
+            painter.drawText(QRectF(badge_r.left() + 8, badge_r.top() + 3, badge_r.width() - 16, 16), Qt.AlignmentFlag.AlignLeft, f"● {param_key}")
+            py += 26.0
+
+            painter.setFont(f_small)
+            painter.setPen(QPen(QColor("#a8e8b8")))
+            painter.drawText(QRectF(x2 + 22, py, col_w2 - 36, 32), Qt.AlignmentFlag.AlignLeft | Qt.TextFlag.TextWordWrap, param_info)
+            py += 36.0
+
+        # Footer
+        painter.setFont(font_mono)
+        painter.setPen(QPen(QColor(PHOSPHOR_DIM)))
+        painter.drawText(
+            QRectF(20, h - 26, w - 40, 20),
+            Qt.AlignmentFlag.AlignCenter,
+            f"STAGE {s.number} OF 08 • PRESS ESC OR CLICK '◄ BACK' TO RETURN TO PIPELINE OVERVIEW",
+        )
+
+
 class AboutDialog(QDialog):
     """Information dialog presenting the physical simulation details, links, and support options."""
 
@@ -364,23 +923,44 @@ class AboutDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("aboutDialog")
         self.setWindowTitle(ABOUT_TITLE)
-        self.setFixedSize(*ABOUT_DIALOG_SIZE)
+        self.resize(*ABOUT_DIALOG_SIZE)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 20, 20, 16)
-        layout.setSpacing(12)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        tabs = QTabWidget(self)
+        tabs.setObjectName("aboutTabs")
+        tabs.setStyleSheet(
+            "QTabWidget::pane { border: 1px solid #1c9a45; background: #010804; } "
+            "QTabBar::tab { background: #081a0e; color: #1c9a45; padding: 7px 18px; font-weight: bold; border: 1px solid #0e4a22; margin-right: 2px; } "
+            "QTabBar::tab:selected { background: #0e4a22; color: #39ff6e; border-bottom: 2px solid #39ff6e; }"
+        )
+
+        # Tab 1: Interactive Phosphor Flow Canvas
+        self.flow_view = PhosphorFlowView()
+        tabs.addTab(self.flow_view, "Physical Simulation Pipeline")
+
+        # Tab 2: Overview & Project Links
+        info_tab = QWidget()
+        info_tab.setObjectName("infoTab")
+        info_layout = QVBoxLayout(info_tab)
+        info_layout.setContentsMargins(24, 20, 24, 20)
+        info_layout.setSpacing(12)
 
         header = QLabel("<h2>vhs-phys</h2>")
         header.setObjectName("aboutHeader")
-        layout.addWidget(header)
+        header.setStyleSheet("color: #39ff6e;")
+        info_layout.addWidget(header)
 
-        subtitle = QLabel("<b>A physical model of VHS recording, tape transport, and RF playback</b>")
+        subtitle = QLabel("<b>A first-principles physical model of VHS recording, tape transport, and RF playback</b>")
         subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
+        subtitle.setStyleSheet("color: #d8ffe3;")
+        info_layout.addWidget(subtitle)
 
         body_text = (
-            "<p>A first-principles simulation of the complete helical-scan tape chain:</p>"
-            "<ul>"
+            "<p style='color: #c0f4d0;'>A complete physical simulation of the helical-scan tape chain:</p>"
+            "<ul style='color: #a0e0b0; line-height: 1.5;'>"
             "<li><b>RF recording:</b> Direct FM luminance synthesis, colour-under heterodyne downconversion, and sub-sample magnetic transition timing.</li>"
             "<li><b>Tape &amp; head physics:</b> Spacing loss (Wallace law), self-demagnetisation, head pole-tip wear, azimuth crosstalk, and oxide dropouts.</li>"
             "<li><b>Camera optics:</b> Vidicon, Plumbicon, Saticon, and Chalnicon pickup tube lag, target saturation, and highlight comet tails.</li>"
@@ -390,27 +970,35 @@ class AboutDialog(QDialog):
         )
         body = QLabel(body_text)
         body.setWordWrap(True)
-        layout.addWidget(body)
+        info_layout.addWidget(body)
 
-        links_layout = QHBoxLayout()
+        info_layout.addStretch(1)
+
+        links_box = QHBoxLayout()
         kofi_btn = QPushButton("Support on Ko-fi")
         kofi_btn.setObjectName("kofiButton")
         kofi_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(KOFI_URL)))
-        links_layout.addWidget(kofi_btn)
+        links_box.addWidget(kofi_btn)
 
         github_btn = QPushButton("GitHub Repository")
         github_btn.setObjectName("githubButton")
         github_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(GITHUB_URL)))
-        links_layout.addWidget(github_btn)
+        links_box.addWidget(github_btn)
 
-        links_layout.addStretch(1)
+        links_box.addStretch(1)
+        info_layout.addLayout(links_box)
 
+        tabs.addTab(info_tab, "Project Overview & Links")
+
+        layout.addWidget(tabs, 1)
+
+        bottom_bar = QHBoxLayout()
+        bottom_bar.addStretch(1)
         close_btn = QPushButton("Close")
         close_btn.setObjectName("closeAboutButton")
         close_btn.clicked.connect(self.accept)
-        links_layout.addWidget(close_btn)
-
-        layout.addLayout(links_layout)
+        bottom_bar.addWidget(close_btn)
+        layout.addLayout(bottom_bar)
 
 
 @dataclass
