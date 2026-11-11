@@ -8,10 +8,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-# The core works at NTSC frame timing whatever the frame rate of the input is.
+# The core works at the frame timing of its television standard whatever the frame rate of the
+# input is: NTSC (and PAL-60, an NTSC tape) at 30000/1001, PAL at 25. FPS is the NTSC rate.
 FPS_NUM = 30000
 FPS_DEN = 1001
 FPS = FPS_NUM / FPS_DEN
+
+# The television standards of the core: the 525-line NTSC chain, the 625-line PAL chain, and
+# an NTSC tape played into a PAL television.
+STANDARDS = ("ntsc", "pal", "pal60")
+DEFAULT_STANDARD = "ntsc"
+FRAME_RATES: dict[str, tuple[int, int]] = {"ntsc": (FPS_NUM, FPS_DEN), "pal": (25, 1), "pal60": (FPS_NUM, FPS_DEN)}
+
+# The camera's pickup tube ahead of the recorder (`--camera-tube`), and how far its iris is
+# opened beyond normal exposure (`--iris-stops`): overexposed highlights leave comet tails.
+CAMERA_TUBES = ("off", "plumbicon", "plumbicon-bias", "plumbicon-act")
+IRIS_STOPS_RANGE = (-2.0, 6.0)
 
 # A frame needs two frames of context on each side, so the first frames of a fresh
 # render are not representative. A render that starts mid-file therefore begins this
@@ -30,9 +42,16 @@ AUDIO_MODES = ("process", "copy", "none")
 MAX_GENERATIONS = 8
 
 
-def frame_time(index: int) -> float:
-    """Start time in seconds of frame `index` at the NTSC rate."""
-    return index * FPS_DEN / FPS_NUM
+def fps_of(standard: str = DEFAULT_STANDARD) -> float:
+    """Frames per second of the core for a standard."""
+    num, den = FRAME_RATES[standard]
+    return num / den
+
+
+def frame_time(index: int, standard: str = DEFAULT_STANDARD) -> float:
+    """Start time in seconds of frame `index` at the standard's rate."""
+    num, den = FRAME_RATES[standard]
+    return index * den / num
 
 
 class GuiError(Exception):
@@ -147,6 +166,10 @@ class MediaInfo:
         """Frames the core will see: the duration at the NTSC rate."""
         return int(round(self.duration * FPS))
 
+    def frames_at(self, standard: str = DEFAULT_STANDARD) -> int:
+        """Frames the core will see at the rate of `standard`."""
+        return int(round(self.duration * fps_of(standard)))
+
 
 @dataclass
 class Look:
@@ -161,6 +184,9 @@ class Look:
     generations: int = 1  # dubs: 1 is the original recording, 2 a copy of it, ...
     signal: str = "svideo"  # one of SIGNALS
     audio: str = "process"  # one of AUDIO_MODES
+    standard: str = DEFAULT_STANDARD  # one of STANDARDS
+    camera_tube: str = "off"  # one of CAMERA_TUBES
+    iris_stops: float = 0.0  # within IRIS_STOPS_RANGE; only matters with a tube
 
 
 @dataclass
