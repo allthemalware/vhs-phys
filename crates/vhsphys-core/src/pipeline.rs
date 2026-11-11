@@ -15,7 +15,8 @@ use super::audio::AudioParams;
 use super::camera::{CameraParams, CameraTube};
 use super::composite::CompositeParams;
 use super::consts::*;
-use super::decode::{decode_frame, demod_chroma, DecodeParams, StreamView};
+use super::crt;
+use super::decode::{decode_baseband, demod_chroma, DecodeParams, StreamView};
 use super::electronics::{process_segment, DeckParams};
 use super::format::TapeSpeed;
 use super::head::*;
@@ -433,9 +434,15 @@ impl Session {
             }
         }
         let bb = match self.camera.as_mut() {
-            Some(camera) => encode_frame(&camera.process_frame(f)),
+            Some(camera) => camera.encode_baseband(f),
             None => encode_frame(f),
         };
+        self.push_baseband(bb);
+    }
+
+    /// Queue a continuous `Baseband` frame directly (used when dubbing from an upstream VCR deck
+    /// in `Chain` without converting to an intermediate `u8` RGB `Frame` or running through a camera).
+    pub fn push_baseband(&mut self, bb: Baseband) {
         self.frames.push_back(Arc::new(bb));
         self.pushed += 1;
     }
@@ -466,11 +473,12 @@ impl Session {
         (self.next_out + out + LOOKAHEAD - 1 - self.pushed).max(0)
     }
 
-    /// Produce up to `max_frames` output frames.
-    pub fn process(&mut self, max_frames: usize) -> Vec<Frame> {
+    /// Produce up to `max_frames` continuous `Baseband` outputs ahead of the CRT picture tube.
+    /// Used by intermediate stages in `Chain` (multi-generation dubbing) and by `process`.
+    pub fn process_baseband(&mut self, max_frames: usize) -> (i64, Vec<Baseband>) {
         let count = (self.ready() as usize).min(max_frames) as i64;
         if count == 0 {
-            return vec![];
+            return (self.next_out, vec![]);
         }
         let (k0, k1) = (self.next_out, self.next_out + count);
         let src = WindowSource {
@@ -505,17 +513,17 @@ impl Session {
         let made: Vec<(i64, Arc<SegMid>)> = need.par_iter().map(|&n| (n, Arc::new(segment(p, rfm, n)))).collect();
         self.seg.extend(made);
 
-        // 4. decode frames
+        // 4. decode continuous baseband planes
         let ks: Vec<i64> = (k0..k1).collect();
         let segm = &self.seg;
-        let frames: Vec<Frame> = ks
+        let bbs: Vec<Baseband> = ks
             .par_iter()
             .map(|&k| {
                 let parts = [&segm[&(2 * k)], &segm[&(2 * k + 1)], &segm[&(2 * k + 2)]];
                 let luma: Vec<f32> = parts.iter().flat_map(|s| s.luma.iter().copied()).collect();
                 let cu: Vec<f32> = parts.iter().flat_map(|s| s.cunder.iter().copied()).collect();
                 let view = StreamView { bb0: parts[0].bb_start, luma: &luma, cunder: &cu };
-                decode_frame(k, &view, &p.decode, &p.composite, &p.interference)
+                decode_baseband(k, &view, &p.decode, &p.composite, &p.interference)
             })
             .collect();
 
@@ -529,7 +537,21 @@ impl Session {
             self.frames.pop_front();
             self.first_idx += 1;
         }
-        frames
+        (k0, bbs)
+    }
+
+    /// Produce up to `max_frames` output frames. Scanning the continuous baseband through the CRT
+    /// beam and writing the `Frame` to video is strictly the final step.
+    pub fn process(&mut self, max_frames: usize) -> Vec<Frame> {
+        let (k0, bbs) = self.process_baseband(max_frames);
+        if bbs.is_empty() {
+            return vec![];
+        }
+        let itf = &self.params.interference;
+        bbs.par_iter()
+            .enumerate()
+            .map(|(idx, bb)| crt::scan_to_frame(bb, k0 + idx as i64, itf))
+            .collect()
     }
 
     /// Intermediate signals of one field, for analysis (requires the clip to be
@@ -631,15 +653,17 @@ impl Chain {
         self.stages[0].push(f);
     }
 
-    /// No more frames will arrive: finish each generation in turn and hand everything
-    /// it still holds to the next one, so only the last generation has output left.
+    /// No more frames will arrive: finish each generation in turn and hand its continuous
+    /// `Baseband` output directly to the next VCR deck, so only the final generation puts the
+    /// signal through the CRT beam and writes `Frame` to video.
     pub fn finish(&mut self) {
         for i in 0..self.stages.len() {
             self.stages[i].finish();
             if i + 1 < self.stages.len() {
                 while self.stages[i].ready() > 0 {
-                    for f in self.stages[i].process(DRAIN_BATCH) {
-                        self.stages[i + 1].push(&f);
+                    let (_, bbs) = self.stages[i].process_baseband(DRAIN_BATCH);
+                    for bb in bbs {
+                        self.stages[i + 1].push_baseband(bb);
                     }
                 }
             }
@@ -652,9 +676,9 @@ impl Chain {
         self.stages.iter().fold(0, |handed_on, s| s.ready_with(handed_on))
     }
 
-    /// Produce up to `max_frames` output frames. Each generation plays back only as many
-    /// frames as the next one needs for that, in one batch, so every generation keeps the
-    /// field-level parallelism of `Session::process`.
+    /// Produce up to `max_frames` output frames. Each earlier generation plays back continuous
+    /// `Baseband` directly into the next deck's input; only the final stage scans through the
+    /// CRT electron beam and writes the output `Frame` to video.
     pub fn process(&mut self, max_frames: usize) -> Vec<Frame> {
         let n = self.stages.len();
         // work backwards: how many frames each generation must hand to the next
@@ -665,8 +689,9 @@ impl Chain {
         }
         for i in 0..n - 1 {
             if demand[i] > 0 {
-                for f in self.stages[i].process(demand[i] as usize) {
-                    self.stages[i + 1].push(&f);
+                let (_, bbs) = self.stages[i].process_baseband(demand[i] as usize);
+                for bb in bbs {
+                    self.stages[i + 1].push_baseband(bb);
                 }
             }
         }

@@ -127,22 +127,15 @@ pub fn burst_present(line: usize) -> bool {
     structure().1[line]
 }
 
-/// Encode an RGB frame (754 x 480) to baseband Y / C.
-pub fn encode_frame(frame: &Frame) -> Baseband {
-    assert!(frame.w == ACTIVE_W && frame.h == ACTIVE_H, "frame must be {ACTIVE_W}x{ACTIVE_H}");
-    let (sync, burst_line) = structure();
-    let mut bb = Baseband { y: sync.clone(), cu: vec![0.0; FRAME_BB], cv: vec![0.0; FRAME_BB] };
-
+/// Write standard color burst to baseband chroma planes on lines that carry burst.
+pub fn write_standard_burst(bb: &mut Baseband) {
     for line in 0..LINES {
-        if burst_line[line] {
+        if burst_present(line) {
             let s0 = line * BB_PER_LINE + BURST_START;
             for i in 0..BURST_LEN {
-                // 4-sample raised-cosine edges keep the burst narrow-band
                 let e = (i.min(BURST_LEN - 1 - i) as f32 / 4.0).min(1.0);
                 let w = 0.5 - 0.5 * (std::f32::consts::PI * e).cos();
                 match STANDARD {
-                    // PAL: -U + V at 45 degrees, i.e. +135 deg before the line switch; the
-                    // recorder's V switch makes it the swinging burst (+135 / -135 deg)
                     TvStandard::Pal => {
                         let h = std::f32::consts::FRAC_1_SQRT_2;
                         bb.cu[s0 + i] = -BURST_AMP_IRE * h * w;
@@ -153,6 +146,27 @@ pub fn encode_frame(frame: &Frame) -> Baseband {
             }
         }
     }
+}
+
+/// Encode an RGB frame (ACTIVE_W x ACTIVE_H) to baseband Y / C.
+pub fn encode_frame(frame: &Frame) -> Baseband {
+    assert!(frame.w == ACTIVE_W && frame.h == ACTIVE_H, "frame must be {ACTIVE_W}x{ACTIVE_H}");
+    encode_from_rgb(|row, x| {
+        let p = (row * ACTIVE_W + x) * 3;
+        [
+            frame.rgb[p] as f32 / 255.0,
+            frame.rgb[p + 1] as f32 / 255.0,
+            frame.rgb[p + 2] as f32 / 255.0,
+        ]
+    })
+}
+
+/// Encode continuous floating-point RGB gun signals (`0.0..=1.0`) directly to baseband Y / C
+/// without quantising to an intermediate `u8` video frame.
+pub fn encode_from_rgb(mut sample_rgb: impl FnMut(usize, usize) -> [f32; 3]) -> Baseband {
+    let (sync, _) = structure();
+    let mut bb = Baseband { y: sync.clone(), cu: vec![0.0; FRAME_BB], cv: vec![0.0; FRAME_BB] };
+    write_standard_burst(&mut bb);
 
     // The last visible line of the second 625-line field (PAL line 623) is a half line: its
     // second half carries the equalising pulses, so the picture stops at mid line there.
@@ -164,12 +178,7 @@ pub fn encode_frame(frame: &Frame) -> Baseband {
             if interval_half[(base + x) / HALF_LINE_BB] {
                 continue;
             }
-            let p = (row * ACTIVE_W + x) * 3;
-            let (r, g, b) = (
-                frame.rgb[p] as f32 / 255.0,
-                frame.rgb[p + 1] as f32 / 255.0,
-                frame.rgb[p + 2] as f32 / 255.0,
-            );
+            let [r, g, b] = sample_rgb(row, x);
             let (y, u, v) = rgb_to_ycc(r, g, b);
             bb.y[base + x] = y;
             bb.cu[base + x] = u;

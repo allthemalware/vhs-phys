@@ -106,10 +106,12 @@ so a split buffer or a render from any start gives the same result; with every s
 render_rf    tape signal x head_signal_gain (magnet at the drum)   -> head_front_end (noise)
              + rf_pickup_add (radio carrier in the head leads, dimmer burst)
 decode       after the clamp: (y - clamp) (1 + video_gain) + video_add_ire (ground loop, rectified phone and AM, dimmer ring)
-             after decode_ideal: crt::apply (magnet at the tube, stray mains field)
+             crt::scan_to_frame: continuous baseband -> CRT electron beam & phosphor aperture grille -> write Frame to video (LAST step)
 audio        pre-equaliser: audio_add pre_eq (rectified phone and AM, stray-field induction), tape gain (magnet)
              post-equaliser: audio_add post_eq (ground loop, dimmer click)
 ```
+
+**Hard rule (Simulating, not Emulating):** All signal processing is performed in terms of physics on the continuous signal as it is created (`camera::encode_baseband` / `video::encode_frame`), recorded, read back, run through the deck electronics, and passed through the CRT electron beam (`crt::scan_to_frame`). The **last** step at all times is writing the `Frame` (`u8` RGB buffer) to video. No effect may ever post-process or mutate a `Frame` in pixel space after it has been written to video.
 
 Calibration aligns the deck with every source off (on the bench), so a source is seen by the AGC and the slicers as it
 would be in use, not absorbed into the alignment.

@@ -11,7 +11,7 @@
 //! The stage is off by default and then costs nothing: the session does not even build it.
 
 use super::consts::{ACTIVE_H, ACTIVE_W, BB_PER_LINE, FRAME_RATE, LINES};
-use super::video::Frame;
+use super::video::{encode_from_rgb, Baseband, Frame};
 use crate::tube::{dark_equilibrium, frame_step, oetf, oetf_inverse, photo_current, TubeChannel, TubeKind, BEAM_RATIO_DEFAULT};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -84,6 +84,32 @@ impl CameraTube {
                 *p = photo_current(&self.channels[k], oetf_inverse(v as f64 / 255.0) * exposure);
             }
         }
+    }
+
+    /// Expose the targets to `frame` for one frame time, scan them, and encode the continuous
+    /// camera output signal directly to baseband Y / C without writing an intermediate `u8`
+    /// video frame.
+    pub fn encode_baseband(&mut self, frame: &Frame) -> Baseband {
+        assert_eq!(frame.rgb.len(), self.charge.len(), "the camera stage takes frames of the engine's active size");
+        let (channels, black, photo) = (&self.channels, &self.black, &self.photo);
+        let row_len = ACTIVE_W * 3;
+        let mut signals = vec![0.0f32; self.charge.len()];
+        signals
+            .par_chunks_mut(row_len)
+            .zip(self.charge.par_chunks_mut(row_len))
+            .zip(frame.rgb.par_chunks(row_len))
+            .for_each(|((sig, charge), input)| {
+                for (i, ((out_s, q), &v)) in sig.iter_mut().zip(charge.iter_mut()).zip(input.iter()).enumerate() {
+                    let k = i % 3;
+                    let s = frame_step(&channels[k], q, photo[k][v as usize]);
+                    let lin = (s - black[k]) / channels[k].peak_signal_na;
+                    *out_s = oetf(lin) as f32;
+                }
+            });
+        encode_from_rgb(|row, x| {
+            let p = (row * ACTIVE_W + x) * 3;
+            [signals[p], signals[p + 1], signals[p + 2]]
+        })
     }
 
     /// Expose the targets to `frame` for one frame time, scan them, and return what the

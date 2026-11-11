@@ -26,7 +26,7 @@ use super::interference::video_line_terms;
 use crate::interference_params::InterferenceParams;
 use crate::standard::{self, ColourTv, TvStandard};
 use super::record::{line_rotation, pal60_switched, v_switched, CU_WHOLE_CYCLES_PER_LINE};
-use super::video::{decode_ideal, Baseband, Frame};
+use super::video::{write_standard_burst, Baseband, Frame};
 use std::f64::consts::PI;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -227,20 +227,27 @@ pub(crate) fn demod_chroma(view: &StreamView, start: i64, len: usize, p: &Decode
     (re, im)
 }
 
-/// Decode frame `k` from the deck output to RGB. With `composite.enabled` the decoded
-/// luma and chroma first pass through a composite connection to the TV. `itf` is the
-/// outside world: what it adds in the TV's video stages and what it does to the picture tube.
-pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams, composite: &CompositeParams, itf: &InterferenceParams) -> Frame {
+/// Decode frame `k` from the deck output to continuous `Baseband` `(y, cu, cv)` ahead of the CRT
+/// picture tube. With `composite.enabled` the decoded luma and chroma pass through a composite
+/// connection. Multi-generation VCR dubbing (`Chain`) uses this directly so intermediate decks
+/// dub the continuous electrical video signal without passing through a CRT screen or quantising
+/// to an intermediate `u8` video `Frame`.
+pub fn decode_baseband(k: i64, view: &StreamView, p: &DecodeParams, composite: &CompositeParams, itf: &InterferenceParams) -> Baseband {
     let mut bb = decode_planes(k, view, p, itf);
     if composite.enabled {
         composite::roundtrip_with_tv(&mut bb, k, composite, p.tv);
     }
-    let mut frame = decode_ideal(&bb);
-    // nothing acts on the tube without a magnet or a stray field
-    if itf.crt_on() {
-        crt::apply(&mut frame, k, itf);
-    }
-    frame
+    bb
+}
+
+/// Decode frame `k` from the deck output to RGB. With `composite.enabled` the decoded
+/// luma and chroma first pass through a composite connection to the TV. `itf` is the
+/// outside world: what it adds in the TV's video stages and what it does to the picture tube.
+/// All signal processing happens in continuous analog space through the CRT beam; writing the
+/// output `Frame` to video is strictly the last step.
+pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams, composite: &CompositeParams, itf: &InterferenceParams) -> Frame {
+    let bb = decode_baseband(k, view, p, composite, itf);
+    crt::scan_to_frame(&bb, k, itf)
 }
 
 /// What the outside world does to one luma sample after the TV's clamp: a ground loop moves
@@ -385,6 +392,7 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
             }
         }
     }
+    write_standard_burst(&mut planes);
     planes
 }
 

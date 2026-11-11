@@ -10,10 +10,11 @@
 //!
 //! Frozen contract: names, signatures and the semantics written here.
 
-use super::consts::{FH, LINES};
+use super::consts::{ACTIVE_H, ACTIVE_START, ACTIVE_W, BB_PER_LINE, FH, LINES};
+use crate::dsp::sample_cubic;
 use super::interference::{approach_scale, dipole_field, electron_momentum, mains_waveform, E_CHARGE};
 use crate::interference_params::*;
-use super::video::{row_to_line, Frame};
+use super::video::{decode_ideal, row_to_line, ycc_to_rgb, Baseband, Frame};
 
 /// A magnet nearer the axis than this sits on the neck of the tube and is taken to point along it; further out it points at the axis.
 const ON_AXIS_RHO_M: f64 = 0.05;
@@ -28,8 +29,12 @@ const PATH_INTERVALS: usize = 256;
 const GRID_W: usize = 48;
 const GRID_H: usize = 36;
 
-/// Fixed-point steps that invert `s + d(s) = q` for the source point `s` of an output pixel `q`.
-const INVERSION_STEPS: usize = 2;
+/// Fixed-point steps that invert `s + d(s) = q` for the source point `s` of an output point `q`.
+const INVERSION_STEPS: usize = 6;
+
+/// Damping factor on later fixed-point inversion steps so steep dipole gradients near a close magnet
+/// converge smoothly instead of oscillating ("crinkling").
+const INVERSION_DAMPING: f32 = 0.65;
 
 /// Bounds of the brightness gain `1 / |det J|`: beams that crowd (det < 1) brighten, beams that spread darken.
 const GAIN_MIN: f32 = 0.25;
@@ -142,6 +147,28 @@ pub fn line_time_s(k: i64, row: usize) -> f64 {
     (k as f64 * LINES as f64 + line as f64) / FH
 }
 
+/// Scan continuous baseband video `(y, cu, cv)` directly through the picture tube's electron beam
+/// and phosphor aperture grille, writing the final `u8` video `Frame` once at the very end.
+/// When `!p.crt_on()`, this is identical to `decode_ideal(bb)`.
+pub fn scan_to_frame(bb: &Baseband, k: i64, p: &InterferenceParams) -> Frame {
+    if !p.crt_on() {
+        return decode_ideal(bb);
+    }
+    let mut frame = Frame::new(ACTIVE_W, ACTIVE_H);
+    let screen = Screen::new(ACTIVE_W, ACTIVE_H, &p.crt);
+    let grids = DisplacementGrids::new(p, k, &screen);
+    let mut combined = vec![[0.0f32; 2]; GRID_W * GRID_H];
+    let limit_px = MAX_SHIFT_SCREENS * ACTIVE_W as f64;
+    for row in 0..ACTIVE_H {
+        let stray = stray_field_t(p, line_time_s(k, row));
+        grids.combine(stray, limit_px, &mut combined);
+        let field = GridField::new(&combined, &screen);
+        let out = &mut frame.rgb[row * ACTIVE_W * 3..(row + 1) * ACTIVE_W * 3];
+        render_row_baseband(out, bb, &screen, &field, row);
+    }
+    frame
+}
+
 /// Apply the tube's response to a decoded frame: every pixel shows what the beam aimed at it would show where it really
 /// lands (a displacement field `displacement_m` per row time, converted from metres to pixels with the screen size),
 /// scaled in brightness by the inverse of the local area change (beams that crowd together are brighter), and the colours mixed
@@ -153,7 +180,7 @@ pub fn apply(frame: &mut Frame, k: i64, p: &InterferenceParams) {
     }
     let screen = Screen::new(frame.w, frame.h, &p.crt);
     let grids = DisplacementGrids::new(p, k, &screen);
-    let source = frame.rgb.clone();
+    let source: Vec<f32> = frame.rgb.iter().map(|&v| v as f32).collect();
     let mut combined = vec![[0.0f32; 2]; GRID_W * GRID_H];
     let limit_px = MAX_SHIFT_SCREENS * frame.w as f64;
     for row in 0..frame.h {
@@ -161,7 +188,7 @@ pub fn apply(frame: &mut Frame, k: i64, p: &InterferenceParams) {
         grids.combine(stray, limit_px, &mut combined);
         let field = GridField::new(&combined, &screen);
         let out = &mut frame.rgb[row * frame.w * 3..(row + 1) * frame.w * 3];
-        render_row(out, &source, &screen, &field, row);
+        render_row_f32(out, &source, &screen, &field, row);
     }
 }
 
@@ -429,44 +456,97 @@ impl<'a> GridField<'a> {
         Self { nodes, cells_per_px: [1.0 / cell[0] as f32, 1.0 / cell[1] as f32] }
     }
 
+    #[inline]
+    fn node(&self, i: isize, j: isize) -> [f32; 2] {
+        let ic = i.clamp(0, (GRID_W - 1) as isize) as usize;
+        let jc = j.clamp(0, (GRID_H - 1) as isize) as usize;
+        self.nodes[jc * GRID_W + ic]
+    }
+
+    /// C1-continuous Catmull-Rom bicubic interpolation of the displacement `d` and its exact
+    /// analytic Jacobian `jac` so cell boundaries never create step discontinuities in
+    /// beam-crowding brightness gain or phosphor stripe slope.
     fn sample(&self, col: f32, row: f32) -> LocalShift {
         let gx = (col * self.cells_per_px[0]).clamp(0.0, (GRID_W - 1) as f32);
         let gy = (row * self.cells_per_px[1]).clamp(0.0, (GRID_H - 1) as f32);
-        let i = (gx as usize).min(GRID_W - 2);
-        let j = (gy as usize).min(GRID_H - 2);
-        let fx = gx - i as f32;
-        let fy = gy - j as f32;
-        let n00 = self.nodes[j * GRID_W + i];
-        let n10 = self.nodes[j * GRID_W + i + 1];
-        let n01 = self.nodes[(j + 1) * GRID_W + i];
-        let n11 = self.nodes[(j + 1) * GRID_W + i + 1];
+        let i = (gx.floor() as isize).min((GRID_W - 2) as isize);
+        let j = (gy.floor() as isize).min((GRID_H - 2) as isize);
+        let tx = gx - i as f32;
+        let ty = gy - j as f32;
+
+        let wx = [
+            tx * (tx * (-0.5 * tx + 1.0) - 0.5),
+            tx * tx * (1.5 * tx - 2.5) + 1.0,
+            tx * (tx * (-1.5 * tx + 2.0) + 0.5),
+            tx * tx * (0.5 * tx - 0.5),
+        ];
+        let dwx = [
+            -1.5 * tx * tx + 2.0 * tx - 0.5,
+            4.5 * tx * tx - 5.0 * tx,
+            -4.5 * tx * tx + 4.0 * tx + 0.5,
+            1.5 * tx * tx - tx,
+        ];
+        let wy = [
+            ty * (ty * (-0.5 * ty + 1.0) - 0.5),
+            ty * ty * (1.5 * ty - 2.5) + 1.0,
+            ty * (ty * (-1.5 * ty + 2.0) + 0.5),
+            ty * ty * (0.5 * ty - 0.5),
+        ];
+        let dwy = [
+            -1.5 * ty * ty + 2.0 * ty - 0.5,
+            4.5 * ty * ty - 5.0 * ty,
+            -4.5 * ty * ty + 4.0 * ty + 0.5,
+            1.5 * ty * ty - ty,
+        ];
+
         let mut d = [0.0f32; 2];
         let mut jac = [[0.0f32; 2]; 2];
-        // The derivatives of the bilinear interpolant are exact within a cell.
-        for c in 0..2 {
-            let top = n00[c] + fx * (n10[c] - n00[c]);
-            let bottom = n01[c] + fx * (n11[c] - n01[c]);
-            d[c] = top + fy * (bottom - top);
-            jac[c][0] = ((1.0 - fy) * (n10[c] - n00[c]) + fy * (n11[c] - n01[c])) * self.cells_per_px[0];
-            jac[c][1] = (bottom - top) * self.cells_per_px[1];
+        for m in 0..4 {
+            let mut row_val = [0.0f32; 2];
+            let mut row_dx = [0.0f32; 2];
+            for n in 0..4 {
+                let p = self.node(i + n as isize - 1, j + m as isize - 1);
+                for c in 0..2 {
+                    row_val[c] += wx[n] * p[c];
+                    row_dx[c] += dwx[n] * p[c];
+                }
+            }
+            for c in 0..2 {
+                d[c] += wy[m] * row_val[c];
+                jac[c][0] += wy[m] * row_dx[c] * self.cells_per_px[0];
+                jac[c][1] += dwy[m] * row_val[c] * self.cells_per_px[1];
+            }
         }
         LocalShift { d, jac }
     }
 }
 
-/// Fill output row `row` from the source picture: for each pixel invert `s + d(s) = q` by fixed-point steps, sample the
-/// source there, and apply the brightness gain and the stripe mixing of the displacement at `s`.
-fn render_row(out: &mut [u8], source: &[u8], screen: &Screen, field: &GridField, row: usize) {
+/// Invert `s + d(s) = q` for the aim point `s` of a beam landing at `q`, using damped fixed-point
+/// iteration so steep magnetic field gradients converge without oscillating.
+#[inline]
+fn invert_beam_aim(field: &GridField, q: [f32; 2]) -> ([f32; 2], LocalShift) {
+    let mut local = field.sample(q[0], q[1]);
+    let mut s = [q[0] - local.d[0], q[1] - local.d[1]];
+    for step in 1..INVERSION_STEPS {
+        local = field.sample(s[0], s[1]);
+        let target = [q[0] - local.d[0], q[1] - local.d[1]];
+        let alpha = if step == 1 { 1.0 } else { INVERSION_DAMPING };
+        s[0] += alpha * (target[0] - s[0]);
+        s[1] += alpha * (target[1] - s[1]);
+    }
+    local = field.sample(s[0], s[1]);
+    (s, local)
+}
+
+/// Fill output row `row` directly from the continuous `Baseband` scanlines `(y, cu, cv)` at
+/// `14.32 MHz` (`BB_PER_LINE` samples per line), writing the quantised `u8` video pixel only once
+/// at the very end.
+fn render_row_baseband(out: &mut [u8], bb: &Baseband, screen: &Screen, field: &GridField, row: usize) {
     let stripes_per_px = 1.0 / screen.px_per_stripe as f32;
     for (col, px) in out.chunks_exact_mut(3).enumerate() {
         let q = [col as f32, row as f32];
-        // The first guess is the displacement at the output point itself; each step re-reads it at the current source.
-        let mut local = field.sample(q[0], q[1]);
-        for _ in 1..INVERSION_STEPS {
-            local = field.sample(q[0] - local.d[0], q[1] - local.d[1]);
-        }
-        let s = [q[0] - local.d[0], q[1] - local.d[1]];
-        let rgb = sample_source(source, screen, s);
+        let (s, local) = invert_beam_aim(field, q);
+        let rgb = sample_baseband_gun(bb, screen, s);
         let weights = mean_permutation_weights(local.d[0] * stripes_per_px, local.jac[0][0] * stripes_per_px);
         let mixed = mix_colours(weights, rgb);
         let gain = local.gain();
@@ -476,15 +556,78 @@ fn render_row(out: &mut [u8], source: &[u8], screen: &Screen, field: &GridField,
     }
 }
 
-/// Bilinear sample of the source picture at pixel point `s`; outside the picture there is no beam, so black.
-fn sample_source(source: &[u8], screen: &Screen, s: [f32; 2]) -> [f32; 3] {
+/// Continuous sub-sample readout of the electron gun drives `(R, G, B)` (on `0..255` scale)
+/// directly from the `Baseband` scanlines at continuous position `s = (col, row)`.
+/// Horizontal sampling uses `dsp::sample_cubic` along the continuous baseband line; vertical
+/// interpolation blends between adjacent scanlines. Outside the active window there is no beam (black).
+fn sample_baseband_gun(bb: &Baseband, screen: &Screen, s: [f32; 2]) -> [f32; 3] {
+    let (w, h) = (screen.w as f32, screen.h as f32);
+    if s[0] <= -1.0 || s[1] <= -1.0 || s[0] >= w || s[1] >= h {
+        return [0.0; 3];
+    }
+    let y0f = s[1].floor();
+    let fy = s[1] - y0f;
+    let y0 = y0f as isize;
+
+    let sample_line = |r: isize, x: f32| -> [f32; 3] {
+        if r < 0 || r >= screen.h as isize || x < 0.0 || x >= w {
+            return [0.0; 3];
+        }
+        let (line, _) = row_to_line(r as usize);
+        let pos = (line * BB_PER_LINE + ACTIVE_START) as f64 + (x as f64).clamp(0.0, (screen.w - 1) as f64);
+        let y_ire = sample_cubic(&bb.y, pos);
+        let cu_ire = sample_cubic(&bb.cu, pos);
+        let cv_ire = sample_cubic(&bb.cv, pos);
+        let rgb = ycc_to_rgb(y_ire, cu_ire, cv_ire);
+        [rgb[0] * 255.0, rgb[1] * 255.0, rgb[2] * 255.0]
+    };
+
+    // Account for horizontal border fade when -1.0 < s[0] < 0.0 or w - 1.0 < s[0] < w
+    let x_clamped = s[0].clamp(0.0, w - 1.0);
+    let x_weight = if s[0] < 0.0 {
+        1.0 + s[0]
+    } else if s[0] > w - 1.0 {
+        w - s[0]
+    } else {
+        1.0
+    };
+
+    let top = sample_line(y0, x_clamped);
+    let bottom = sample_line(y0 + 1, x_clamped);
+    [
+        (top[0] + fy * (bottom[0] - top[0])) * x_weight,
+        (top[1] + fy * (bottom[1] - top[1])) * x_weight,
+        (top[2] + fy * (bottom[2] - top[2])) * x_weight,
+    ]
+}
+
+/// Fill output row `row` from the continuous floating-point gun signal `source` (and write the
+/// quantised `u8` video pixel only at the very end): for each pixel invert `s + d(s) = q`,
+/// sample the continuous gun signal there, and apply the brightness gain and stripe mixing.
+fn render_row_f32(out: &mut [u8], source: &[f32], screen: &Screen, field: &GridField, row: usize) {
+    let stripes_per_px = 1.0 / screen.px_per_stripe as f32;
+    for (col, px) in out.chunks_exact_mut(3).enumerate() {
+        let q = [col as f32, row as f32];
+        let (s, local) = invert_beam_aim(field, q);
+        let rgb = sample_source_f32(source, screen, s);
+        let weights = mean_permutation_weights(local.d[0] * stripes_per_px, local.jac[0][0] * stripes_per_px);
+        let mixed = mix_colours(weights, rgb);
+        let gain = local.gain();
+        for c in 0..3 {
+            px[c] = (mixed[c] * gain).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+}
+
+/// Bilinear sample of the continuous floating-point gun drive at point `s`; outside the active
+/// raster there is no electron beam, so black.
+fn sample_source_f32(source: &[f32], screen: &Screen, s: [f32; 2]) -> [f32; 3] {
     let (w, h) = (screen.w as i64, screen.h as i64);
     let x0f = s[0].floor();
     let y0f = s[1].floor();
     let fx = s[0] - x0f;
     let fy = s[1] - y0f;
     let (x0, y0) = (x0f as i64, y0f as i64);
-    // Entirely outside the picture (the common case for a pixel no beam reaches): nothing to interpolate.
     if x0 < -1 || y0 < -1 || x0 >= w || y0 >= h {
         return [0.0; 3];
     }
@@ -493,7 +636,7 @@ fn sample_source(source: &[u8], screen: &Screen, s: [f32; 2]) -> [f32; 3] {
             return [0.0; 3];
         }
         let at = ((y * w + x) * 3) as usize;
-        [source[at] as f32, source[at + 1] as f32, source[at + 2] as f32]
+        [source[at], source[at + 1], source[at + 2]]
     };
     let (p00, p10, p01, p11) = (tap(x0, y0), tap(x0 + 1, y0), tap(x0, y0 + 1), tap(x0 + 1, y0 + 1));
     let mut rgb = [0.0f32; 3];
