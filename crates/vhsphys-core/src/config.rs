@@ -7,7 +7,6 @@
 //! `tape`, `mech`, `tracking`, `head` (both heads), `head0`, `head1`, and the
 //! top-level `seed`.
 
-use super::camera::{CameraParams, TubeKind};
 use super::condition::Condition;
 use super::pipeline::Params;
 
@@ -37,16 +36,6 @@ pub fn apply_overrides(p: &Params, text: &str) -> Result<Params, String> {
     let mut aside = p.clone();
     aside.seed = 0;
     aside.interference.seed = 0;
-    if let Some(toml::Value::Table(cam)) = over.get("camera") {
-        if let Some(toml::Value::String(ts)) = cam.get("tube") {
-            let kind: TubeKind = toml::Value::String(ts.clone())
-                .try_into()
-                .map_err(|e| format!("config: {e}"))?;
-            if kind != TubeKind::Off && aside.camera.tube != kind {
-                aside.camera = CameraParams::for_tube(kind);
-            }
-        }
-    }
     let mut base = toml::Value::try_from(aside).map_err(|e| e.to_string())?;
     // head / head0 / head1 shorthands -> heads[0], heads[1]
     let mut heads: [toml::Table; 2] = [toml::Table::new(), toml::Table::new()];

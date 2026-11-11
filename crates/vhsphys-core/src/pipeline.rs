@@ -11,7 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 use super::audio::AudioParams;
-use super::camera::{CameraParams, CameraTube, PhosphorState};
+use super::camera::{CameraParams, CameraTube};
 use super::composite::CompositeParams;
 use super::consts::*;
 use super::decode::{decode_frame, demod_chroma, DecodeParams, StreamView};
@@ -56,7 +56,7 @@ pub struct Params {
     pub speed: TapeSpeed,
     /// The television standard this engine was built for (`consts::STANDARD`); not validated yet.
     pub standard: TvStandard,
-    /// Camera pickup tube target lag / comet-tails and CRT phosphor persistence (off by default).
+    /// The camera's pickup tubes: lag and comet tails ahead of the recorder (off by default).
     pub camera: CameraParams,
     /// Composite video stage after the deck's decode (off by default).
     pub composite: CompositeParams,
@@ -337,8 +337,11 @@ pub struct Session {
     pub params: Params,
     cx: Ctx,
     pub cal: Calibration,
-    camera_tube: CameraTube,
-    phosphor: PhosphorState,
+    /// The camera stage, built only when there is a tube. Its memory (the charge on the tube
+    /// targets) starts at dark equilibrium when the session starts, so a render that starts
+    /// part-way into a clip with the tube on needs a pre-roll of frames before its first
+    /// output frame to match a render of the whole clip.
+    camera: Option<CameraTube>,
     frames: VecDeque<Arc<Baseband>>,
     first_idx: i64,
     pushed: i64,
@@ -365,15 +368,13 @@ impl Session {
         params.decode.burst_nominal = cal.burst_nominal;
         params.decode.burst_boost = params.record.burst_boost as f64;
         params.decode.chroma_delay = cal.chroma_delay;
-        let camera_tube = CameraTube::new(params.camera.clone());
-        let phosphor = PhosphorState::new(&params.camera);
+        let camera = CameraTube::new(&params.camera);
         let cx = Ctx::new(params.clone());
         Self {
             params,
             cx,
             cal,
-            camera_tube,
-            phosphor,
+            camera,
             frames: VecDeque::new(),
             first_idx: start,
             pushed: start,
@@ -387,11 +388,9 @@ impl Session {
 
     /// Queue an input frame (must be ACTIVE_W x ACTIVE_H RGB).
     pub fn push(&mut self, f: &Frame) {
-        let bb = if self.params.camera.tube_on() {
-            let cam_f = self.camera_tube.process_frame(f);
-            encode_frame(&cam_f)
-        } else {
-            encode_frame(f)
+        let bb = match self.camera.as_mut() {
+            Some(camera) => encode_frame(&camera.process_frame(f)),
+            None => encode_frame(f),
         };
         self.frames.push_back(Arc::new(bb));
         self.pushed += 1;
@@ -464,7 +463,7 @@ impl Session {
         // 4. decode frames
         let ks: Vec<i64> = (k0..k1).collect();
         let segm = &self.seg;
-        let mut frames: Vec<Frame> = ks
+        let frames: Vec<Frame> = ks
             .par_iter()
             .map(|&k| {
                 let parts = [&segm[&(2 * k)], &segm[&(2 * k + 1)], &segm[&(2 * k + 2)]];
@@ -474,11 +473,6 @@ impl Session {
                 decode_frame(k, &view, &p.decode, &p.composite, &p.interference)
             })
             .collect();
-        if self.params.camera.phosphor_on() {
-            for f in &mut frames {
-                self.phosphor.apply(f);
-            }
-        }
 
         self.next_out = k1;
         // evict
