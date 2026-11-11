@@ -107,6 +107,8 @@ class Label:
     size: float
     align: str
     brightness: str
+    # (choice control id, the values of it for which the label is drawn); None draws it always.
+    when: tuple[str, tuple[str, ...]] | None = None
 
 
 @dataclass(frozen=True)
@@ -191,6 +193,30 @@ def _field(obj: dict[str, Any], name: str, path: str) -> Any:
 def _version(obj: dict[str, Any], path: str) -> None:
     if obj.get("version") != EXPECTED_VERSION:
         raise ValueError(f"{path}.version: expected {EXPECTED_VERSION}")
+
+
+def _parse_when(value: Any, path: str) -> tuple[str, tuple[str, ...]]:
+    """Shape of a label's `when`: one control id mapped to a non-empty list of values."""
+    condition = _object(value, path)
+    if len(condition) != 1:
+        raise _error(path, "expected exactly one control")
+    ((control_id, values),) = condition.items()
+    if not isinstance(values, list) or not values or not all(isinstance(item, str) for item in values):
+        raise _error(f"{path}.{control_id}", "expected a non-empty list of choice values")
+    return control_id, tuple(values)
+
+
+def _check_when(label: Label, controls: dict[str, Control], path: str) -> None:
+    """The condition has to name a choice control of the same page and only values that control offers."""
+    if label.when is None:
+        return
+    control_id, values = label.when
+    control = controls.get(control_id)
+    if control is None or control.kind != "choice":
+        raise _error(f"{path}.when", f"{control_id!r} is not a choice control of this page")
+    unknown = [value for value in values if value not in control.choices]
+    if unknown:
+        raise _error(f"{path}.when.{control_id}", f"{unknown[0]!r} is not one of its choices")
 
 
 def _parse_style(value: Any, path: str) -> dict[str, Any]:
@@ -341,7 +367,8 @@ def _parse_layout(raw: Any, path: str, glyphs: dict[str, Glyph]) -> SchematicDat
     for i, value in enumerate(obj.get("labels", [])):
         item_path = f"{path}.labels[{i}]"
         item = _object(value, item_path)
-        labels.append(Label(_text(_field(item, "text", item_path), f"{item_path}.text"), float(_number(_field(item, "x", item_path), f"{item_path}.x")), float(_number(_field(item, "y", item_path), f"{item_path}.y")), float(_number(_field(item, "size", item_path), f"{item_path}.size")), item.get("align", "l"), item.get("b", "norm")))
+        when = _parse_when(item["when"], f"{item_path}.when") if "when" in item else None
+        labels.append(Label(_text(_field(item, "text", item_path), f"{item_path}.text"), float(_number(_field(item, "x", item_path), f"{item_path}.x")), float(_number(_field(item, "y", item_path), f"{item_path}.y")), float(_number(_field(item, "size", item_path), f"{item_path}.size")), item.get("align", "l"), item.get("b", "norm"), when))
     title_raw = _object(_field(obj, "title", path), f"{path}.title")
     title = Label(_text(_field(title_raw, "text", f"{path}.title"), f"{path}.title.text"), float(_number(_field(title_raw, "x", f"{path}.title"), f"{path}.title.x")), float(_number(_field(title_raw, "y", f"{path}.title"), f"{path}.title.y")), float(_number(_field(title_raw, "size", f"{path}.title"), f"{path}.title.size")), "l", "norm")
     hint_raw = _object(_field(obj, "hint", path), f"{path}.hint")
@@ -363,6 +390,10 @@ def _parse_layout(raw: Any, path: str, glyphs: dict[str, Glyph]) -> SchematicDat
         if kind == "choice" and (not choices or not all(isinstance(choice, str) for choice in choices)):
             raise _error(f"{item_path}.choices", "choice controls need non-empty text choices")
         controls.append(Control(ident, _text(_field(item, "block", item_path), f"{item_path}.block"), _text(_field(item, "label", item_path), f"{item_path}.label"), float(_number(_field(item, "x", item_path), f"{item_path}.x")), float(_number(_field(item, "y", item_path), f"{item_path}.y")), float(_number(_field(item, "w", item_path), f"{item_path}.w")), kind, item.get("min"), item.get("max"), item.get("step"), item.get("unit", ""), int(item.get("decimals", 0)), choices))
+
+    by_id = {control.id: control for control in controls}
+    for i, label in enumerate(labels):
+        _check_when(label, by_id, f"{path}.labels[{i}]")
 
     animation_raw = _object(_field(obj, "animation", path), f"{path}.animation")
     animation = Animation(*(float(_number(_field(animation_raw, name, f"{path}.animation"), f"{path}.animation.{name}")) for name in ("pulse_speed", "pulse_spacing", "reel_rpm", "flicker", "boot_ms", "refresh_flash_ms")))

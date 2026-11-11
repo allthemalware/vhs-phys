@@ -1,3 +1,23 @@
+"""The schematic widget: draws a page of layout.json and glyphs.json and turns its lines into controls.
+
+Public surface (docs/design/FORMAT.md describes the data it draws):
+
+    SchematicView(parent=None, *, data_dir=None)
+    valueChanged(id, value) / resetRequested(id)
+    control_ids() / value(id) / values() / set_value(id, value, emit=False)
+    choices(id) / set_choices(id, names)
+    set_baseline(values) / is_edited(id)
+    control_rect(id) / control_at(pos)
+    hover_control() / current_control() / set_current_control(id)
+    set_help({id: text}) / hint_text()
+    visible_labels() -> list[str]          the texts of the labels drawn now, in layout order
+    set_screen_image(image) / screen_image() / screen_rect() / set_tv_zoom(on) / tv_zoomed()
+    set_animated(on) / is_animated() / is_ticking() / advance(seconds) / clock()
+    start_boot() / skip_boot() / boot_progress()
+    set_effects(glow, scanlines, vignette) / set_flicker(on)
+    render_to_image(width) -> QImage / overflowing_controls() -> list[str]
+"""
+
 from __future__ import annotations
 
 import math
@@ -10,7 +30,7 @@ from PySide6.QtGui import QColor, QFont, QFontMetricsF, QImage, QKeyEvent, QMous
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-from .data import Control, Primitive, SchematicData, load_data
+from .data import Control, Label, Primitive, SchematicData, load_data
 from .paint import PaintContext, color, draw_block, draw_control, draw_hint, draw_primitive, draw_reel_motion, draw_scanlines, draw_screen, draw_vignette, draw_wire, set_font, text
 
 
@@ -116,6 +136,16 @@ class SchematicView(QWidget):
 
     def values(self) -> dict[str, Any]:
         return dict(self._values)
+
+    def _label_shown(self, label: Label) -> bool:
+        """A label with a `when` is drawn only while its control holds one of the listed values."""
+        if label.when is None:
+            return True
+        control_id, allowed = label.when
+        return self._values.get(control_id) in allowed
+
+    def visible_labels(self) -> list[str]:
+        return [label.text for label in self._data.labels if self._label_shown(label)]
 
     def _snap(self, control: Control, value: Any) -> Any:
         if control.kind == "choice":
@@ -663,7 +693,7 @@ class SchematicView(QWidget):
         return tuple(sorted(control_id for control_id, until in self._flash_until.items() if until > self._clock))
 
     def _ensure_base_cache(self, width: int, device_ratio: float) -> QImage:
-        key = (width, round(width * CANVAS_HEIGHT / CANVAS_WIDTH), round(device_ratio, 6), self._cache_revision, self._flash_signature(), self._theme_key(), self._effects["glow"])
+        key = (width, round(width * CANVAS_HEIGHT / CANVAS_WIDTH), round(device_ratio, 6), self._cache_revision, self._flash_signature(), self._theme_key(), self._effects["glow"], tuple(self.visible_labels()))
         if self._base_cache is not None and self._base_cache_key == key:
             return self._base_cache
         height = key[1]
@@ -682,7 +712,8 @@ class SchematicView(QWidget):
             if wire.label:
                 text(painter, ctx, wire.label, wire.label_at[0], wire.label_at[1], "norm", self._data.theme.font_size)
         for label in self._data.labels:
-            text(painter, ctx, label.text, label.x, label.y, label.brightness, label.size, label.align)
+            if self._label_shown(label):
+                text(painter, ctx, label.text, label.x, label.y, label.brightness, label.size, label.align)
         for instance in self._data.instances:
             glyph = self._data.glyphs[instance.glyph]
             for primitive in glyph.primitives:

@@ -272,7 +272,9 @@ def test_the_schematic_only_draws_while_it_is_shown_and_boots_once(app, window):
 
 
 def test_the_schematic_starts_as_the_window_does(app, window):
-    assert set(window.schematic.control_ids()) | set(window.outside.control_ids()) == {f.key for f in CONDITION_FIELDS} | {"preset", "seed", "generations", "signal", "audio"}
+    assert set(window.schematic.control_ids()) | set(window.outside.control_ids()) == {f.key for f in CONDITION_FIELDS} | {
+        "preset", "seed", "generations", "signal", "audio", "standard", "camera_tube", "iris_stops"
+    }
     assert not set(window.schematic.control_ids()) & set(window.outside.control_ids())
     combo = child(window, QComboBox, "presetCombo")
     assert window.schematic.choices("preset") == [combo.itemText(i) for i in range(combo.count())], "the presets are the ones the program has"

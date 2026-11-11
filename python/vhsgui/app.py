@@ -118,6 +118,7 @@ AUDIO_LABELS = ("Simulate", "Keep original", "Remove")
 STANDARD_LABELS = ("NTSC", "PAL", "PAL-60")  # in the order of STANDARDS
 CAMERA_TUBE_LABELS = ("None", "Plumbicon", "Plumbicon with light bias", "Plumbicon, anti-comet-tail gun")  # in the order of CAMERA_TUBES
 IRIS_STEP = 0.5  # stops per click of the iris box
+DEFAULT_IRIS_STOPS = 0.0  # normal exposure: the iris neither over- nor underexposes
 IRIS_DECIMALS = 1
 PREVIEW_AUDIO = "none"  # a preview is only looked at, so the sound is never rendered for it
 
@@ -150,30 +151,21 @@ MODE_SPLIT = "split"
 TASK_PREVIEW = "preview"
 TASK_RENDER = "render"
 
-# The schematic mirrors these five editor lines and uses the same help text as their tooltips.
+# The schematic mirrors these editor lines and prints the same help text as their tooltips. A text has to
+# fit the schematic's one-line hint band (about 140 characters), or the band cuts it short.
+STANDARD_HELP = "The set's television standard: NTSC is 525 lines at 29.97 fps, PAL 625 at 25 fps, PAL-60 plays an NTSC tape on a PAL set."
+CAMERA_TUBE_HELP = "The camera's pickup tube: a Plumbicon lags and smears bright lights into comet tails; the bias and gun variants cure it."
+IRIS_HELP = "The camera's iris opening past normal, in stops (each doubles the light): wide, it overexposes and shows comet tails. Needs a tube."
 LOOK_HELP = {
     "preset": "The starting condition of the tape and decks; the lines below start from its values.",
     "seed": "Seeds the random defects: the same seed always gives the same damage.",
     "generations": "How many times the tape is copied: each generation is a different deck and tape",
     "signal": "How the picture is separated again: S-Video keeps luma and chroma apart, notch and comb filters mix them the way a TV does.",
     "audio": "The sound track: simulated with the same wear, copied unchanged, or removed.",
+    "standard": STANDARD_HELP,
+    "camera_tube": CAMERA_TUBE_HELP,
+    "iris_stops": IRIS_HELP,
 }
-# Tooltips of the controls that live only in the panels (the schematic does not mirror them).
-STANDARD_HELP = (
-    "The television standard of the set that plays the tape. NTSC is the 525-line picture of North America and Japan, "
-    "PAL the 625-line picture of Europe. PAL-60 is an NTSC tape played on a PAL set: the picture keeps NTSC timing, "
-    "but the set decodes its colour the PAL way."
-)
-CAMERA_TUBE_HELP = (
-    "The pickup tube of the camera that filmed the picture. A Plumbicon tube lags a little, and a bright light "
-    "left in view when the iris is wide open smears into a comet tail. The bias and anti-comet-tail variants "
-    "are the cures the makers used."
-)
-IRIS_HELP = (
-    "How far the camera's iris is opened beyond normal exposure, in stops. Each stop doubles the light, "
-    "so a wide iris overexposes the highlights and brings out the tube's comet tails. "
-    "It only matters when a camera tube is chosen."
-)
 SCHEMATIC_MIN_WIDTH = 1240
 SCHEMATIC_MIN_HEIGHT = 880
 SCHEMATIC_BOTTOM_MAX_HEIGHT = 250
@@ -1104,6 +1096,9 @@ class MainWindow(QMainWindow):
             "generations": look.generations,
             "signal": look.signal,
             "audio": look.audio,
+            "standard": look.standard,
+            "camera_tube": look.camera_tube,
+            "iris_stops": look.iris_stops,
         }
 
     def _sync_schematic(self) -> None:
@@ -1129,6 +1124,9 @@ class MainWindow(QMainWindow):
             "generations": 1,
             "signal": "svideo",
             "audio": "process",
+            "standard": DEFAULT_STANDARD,
+            "camera_tube": backend.DEFAULT_CAMERA_TUBE,
+            "iris_stops": DEFAULT_IRIS_STOPS,
         }
         for view in self._schematic_views:
             view.set_baseline(self._schematic_baseline)
@@ -1178,6 +1176,12 @@ class MainWindow(QMainWindow):
                 self.signal_combo.setCurrentIndex(self.signal_combo.findData(value))
             elif control_id == "audio":
                 self.audio_combo.setCurrentIndex(self.audio_combo.findData(value))
+            elif control_id == "standard":
+                self.standard_combo.setCurrentIndex(self.standard_combo.findData(value))
+            elif control_id == "camera_tube":
+                self.camera_tube_combo.setCurrentIndex(self.camera_tube_combo.findData(value))
+            elif control_id == "iris_stops":
+                self.iris_spin.setValue(float(value))
         finally:
             self._sync_guard = False
         self._sync_schematic()

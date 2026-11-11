@@ -46,7 +46,7 @@
   }
  },
  "title": {
-  "text": "VHS-PHYS // HELICAL-SCAN NTSC SIGNAL CHAIN",
+  "text": "VHS-PHYS // HELICAL-SCAN SIGNAL CHAIN",
   "x": 20,
   "y": 24,
   "size": 14
@@ -63,6 +63,16 @@
    "caption": "SETS MASTER AND NOISE"
   },
   {
+   "id": "camera",
+   "title": "CAMERA",
+   "x": 240,
+   "y": 40,
+   "w": 223,
+   "h": 140,
+   "frame": "box",
+   "caption": "LAGS AND SMEARS HIGHLIGHTS"
+  },
+  {
    "id": "record_deck",
    "title": "RECORD DECK",
    "x": 20,
@@ -76,9 +86,9 @@
    "id": "cassette",
    "title": "CASSETTE",
    "x": 240,
-   "y": 40,
+   "y": 196,
    "w": 224,
-   "h": 480,
+   "h": 375,
    "frame": "box",
    "caption": "SHEDS OXIDE, SOFTENS DETAIL"
   },
@@ -142,6 +152,13 @@
    "block": "source"
   },
   {
+   "glyph": "pickup_tube",
+   "x": 248,
+   "y": 60,
+   "scale": 1.0,
+   "block": "camera"
+  },
+  {
    "glyph": "rec_deck",
    "x": 28,
    "y": 280,
@@ -158,14 +175,14 @@
   {
    "glyph": "cassette",
    "x": 248,
-   "y": 72,
+   "y": 218,
    "scale": 1.0,
    "block": "cassette"
   },
   {
    "glyph": "tape_strip",
    "x": 248,
-   "y": 276,
+   "y": 398,
    "scale": 1.0,
    "block": "cassette"
   },
@@ -255,24 +272,44 @@
    "arrow": true
   },
   {
+   "id": "w_camera",
+   "kind": "video",
+   "points": [
+    [
+     240,
+     90
+    ],
+    [
+     230,
+     90
+    ],
+    [
+     230,
+     262
+    ],
+    [
+     220,
+     262
+    ]
+   ],
+   "label": "",
+   "label_at": [
+    0,
+    0
+   ],
+   "arrow": true
+  },
+  {
    "id": "w_record",
    "kind": "video",
    "points": [
     [
      220,
-     314
-    ],
-    [
-     230,
-     314
-    ],
-    [
-     230,
-     126
+     278
     ],
     [
      240,
-     126
+     278
     ]
    ],
    "label": "",
@@ -288,6 +325,14 @@
    "points": [
     [
      464,
+     262
+    ],
+    [
+     474,
+     262
+    ],
+    [
+     474,
      126
     ],
     [
@@ -447,11 +492,7 @@
    "kind": "audio",
    "points": [
     [
-     352,
-     520
-    ],
-    [
-     352,
+     464,
      546
     ],
     [
@@ -480,11 +521,11 @@
     ],
     [
      848,
-     574
+     584
     ],
     [
      120,
-     574
+     584
     ],
     [
      120,
@@ -493,8 +534,8 @@
    ],
    "label": "DUB",
    "label_at": [
-    472,
-    568
+    500,
+    578
    ],
    "arrow": true
   }
@@ -506,7 +547,38 @@
    "y": 24,
    "size": 11,
    "align": "r",
-   "b": "dim"
+   "b": "dim",
+   "when": {
+    "standard": [
+     "ntsc"
+    ]
+   }
+  },
+  {
+   "text": "PAL 625 / 25 FPS",
+   "x": 1160,
+   "y": 24,
+   "size": 11,
+   "align": "r",
+   "b": "dim",
+   "when": {
+    "standard": [
+     "pal"
+    ]
+   }
+  },
+  {
+   "text": "PAL-60: NTSC 525 TAPE, PAL SET",
+   "x": 1160,
+   "y": 24,
+   "size": 11,
+   "align": "r",
+   "b": "dim",
+   "when": {
+    "standard": [
+     "pal60"
+    ]
+   }
   },
   {
    "text": "CLICK SCREEN TO ENLARGE",
@@ -522,7 +594,26 @@
    "y": 470,
    "size": 11,
    "align": "l",
-   "b": "dim"
+   "b": "dim",
+   "when": {
+    "standard": [
+     "ntsc",
+     "pal60"
+    ]
+   }
+  },
+  {
+   "text": "LUMA FM 3.8-4.8 MHZ",
+   "x": 924,
+   "y": 470,
+   "size": 11,
+   "align": "l",
+   "b": "dim",
+   "when": {
+    "standard": [
+     "pal"
+    ]
+   }
   },
   {
    "text": "CHROMA 629 KHZ HETERO",
@@ -530,7 +621,26 @@
    "y": 490,
    "size": 11,
    "align": "l",
-   "b": "dim"
+   "b": "dim",
+   "when": {
+    "standard": [
+     "ntsc",
+     "pal60"
+    ]
+   }
+  },
+  {
+   "text": "CHROMA 627 KHZ HETERO",
+   "x": 924,
+   "y": 490,
+   "size": 11,
+   "align": "l",
+   "b": "dim",
+   "when": {
+    "standard": [
+     "pal"
+    ]
+   }
   },
   {
    "text": "DRUM 1800 RPM / 62 MM",
@@ -538,7 +648,26 @@
    "y": 510,
    "size": 11,
    "align": "l",
-   "b": "dim"
+   "b": "dim",
+   "when": {
+    "standard": [
+     "ntsc",
+     "pal60"
+    ]
+   }
+  },
+  {
+   "text": "DRUM 1500 RPM / 62 MM",
+   "x": 924,
+   "y": 510,
+   "size": 11,
+   "align": "l",
+   "b": "dim",
+   "when": {
+    "standard": [
+     "pal"
+    ]
+   }
   },
   {
    "text": "SP 33.35 MM/S // EP 11.12 MM/S",
@@ -546,7 +675,26 @@
    "y": 530,
    "size": 11,
    "align": "l",
-   "b": "dim"
+   "b": "dim",
+   "when": {
+    "standard": [
+     "ntsc",
+     "pal60"
+    ]
+   }
+  },
+  {
+   "text": "SP 23.39 MM/S // LP 11.70 MM/S",
+   "x": 924,
+   "y": 530,
+   "size": 11,
+   "align": "l",
+   "b": "dim",
+   "when": {
+    "standard": [
+     "pal"
+    ]
+   }
   }
  ],
  "hint": {
@@ -588,6 +736,35 @@
    "kind": "stepper",
    "min": 0,
    "max": 2147483647
+  },
+  {
+   "id": "camera_tube",
+   "block": "camera",
+   "label": "TUBE",
+   "x": 246,
+   "y": 120,
+   "w": 211,
+   "kind": "choice",
+   "choices": [
+    "off",
+    "plumbicon",
+    "plumbicon-bias",
+    "plumbicon-act"
+   ]
+  },
+  {
+   "id": "iris_stops",
+   "block": "camera",
+   "label": "IRIS",
+   "x": 246,
+   "y": 142,
+   "w": 211,
+   "kind": "slider",
+   "unit": "stops",
+   "min": -2,
+   "max": 6,
+   "step": 0.5,
+   "decimals": 1
   },
   {
    "id": "rec_deck_age_years",
@@ -633,7 +810,7 @@
    "block": "cassette",
    "label": "SPEED",
    "x": 246,
-   "y": 196,
+   "y": 332,
    "w": 212,
    "kind": "choice",
    "choices": [
@@ -647,7 +824,7 @@
    "block": "cassette",
    "label": "PLAYS",
    "x": 246,
-   "y": 218,
+   "y": 354,
    "w": 212,
    "kind": "slider",
    "unit": "",
@@ -661,7 +838,7 @@
    "block": "cassette",
    "label": "POSITION",
    "x": 246,
-   "y": 240,
+   "y": 376,
    "w": 212,
    "kind": "slider",
    "unit": "m",
@@ -675,7 +852,7 @@
    "block": "cassette",
    "label": "TAPE AGE",
    "x": 246,
-   "y": 358,
+   "y": 468,
    "w": 212,
    "kind": "slider",
    "unit": "years",
@@ -689,7 +866,7 @@
    "block": "cassette",
    "label": "STORAGE",
    "x": 246,
-   "y": 380,
+   "y": 490,
    "w": 212,
    "kind": "slider",
    "unit": "",
@@ -703,7 +880,7 @@
    "block": "cassette",
    "label": "QUALITY",
    "x": 246,
-   "y": 402,
+   "y": 512,
    "w": 212,
    "kind": "slider",
    "unit": "",
@@ -717,7 +894,7 @@
    "block": "cassette",
    "label": "STRETCH",
    "x": 246,
-   "y": 424,
+   "y": 534,
    "w": 212,
    "kind": "slider",
    "unit": "",
@@ -888,6 +1065,20 @@
     "process",
     "copy",
     "none"
+   ]
+  },
+  {
+   "id": "standard",
+   "block": "tv",
+   "label": "STANDARD",
+   "x": 930,
+   "y": 364,
+   "w": 224,
+   "kind": "choice",
+   "choices": [
+    "ntsc",
+    "pal",
+    "pal60"
    ]
   }
  ],
