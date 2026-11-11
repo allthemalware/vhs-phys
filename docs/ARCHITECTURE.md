@@ -181,7 +181,8 @@ To preview an excerpt, the backend runs the CLI with `--start` beginning a few f
   chosen by `consts::STANDARD` or follows from a constant: the burst angle (`video`), the V switch
   and the eighth-of-a-turn carrier rotation (`record::v_switched`, `record::line_rotation`), the
   deck's burst reference and 2H comb and the television (`decode`), the slow-speed rules
-  (`ST32_SLOW_SPEED_RULES`), EP (`HAS_EP`) and the mains (`MAINS_HZ_DEFAULT`). PAL-60 and
-  composite PAL are still to come.
+  (`ST32_SLOW_SPEED_RULES`), EP (`HAS_EP`) and the mains (`MAINS_HZ_DEFAULT`). PAL-60 is the
+  `ntsc` engine with a PAL television (`decode`, `record::pal60_switched`). Composite PAL is
+  still to come.
 * S-VHS: FM 5.4-7.0 MHz, 1.6 MHz deviation, extra sub-emphasis, a higher RF
   sample rate.
