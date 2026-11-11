@@ -31,6 +31,7 @@
 //! inverse is exact in closed form and costs one square root a sample, where an iterative
 //! solve inside the recursion would cost several times the rest of the playback chain.
 
+use super::consts::ST32_SLOW_SPEED_RULES;
 use super::format::TapeSpeed;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
@@ -70,8 +71,12 @@ impl Default for SubEmphasisParams {
 }
 
 impl SubEmphasisParams {
-    /// The figures that meet table 4 of the format for this speed; none at SP.
+    /// The figures that meet table 4 of the format for this speed; none at SP, and none at
+    /// all where ST 32's slow-speed rules do not apply (the 625-line format).
     pub fn for_speed(speed: TapeSpeed) -> Option<Self> {
+        if !ST32_SLOW_SPEED_RULES {
+            return None;
+        }
         match speed {
             TapeSpeed::Sp => None,
             TapeSpeed::Lp => Some(LP_FIGURES),

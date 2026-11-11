@@ -54,7 +54,7 @@ pub struct Params {
     pub tracking: TrackingParams,
     /// Tape speed: sets the track pitch, the tape advance and the audio bandwidth.
     pub speed: TapeSpeed,
-    /// The television standard this engine was built for (`consts::STANDARD`); not validated yet.
+    /// The television standard this engine was built for (`consts::STANDARD`); `config::build` refuses another.
     pub standard: TvStandard,
     /// Camera pickup tube target lag / comet-tails and CRT phosphor persistence (off by default).
     pub camera: CameraParams,

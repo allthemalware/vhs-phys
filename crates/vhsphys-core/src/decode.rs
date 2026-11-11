@@ -8,7 +8,11 @@
 //! * the back porch is clamped (DC restoration);
 //! * colour-under is synchronously demodulated with the line-rotated carrier,
 //!   referenced to the burst (APC phase, ACC gain, colour killer) and passed
-//!   through the 1 H comb that cancels adjacent-track crosstalk;
+//!   through the deck's comb that cancels adjacent-track crosstalk (1 H at 525
+//!   lines, 2 H at 625);
+//! * the television then decodes the deck's chroma against its own colour reference
+//!   (off by `tv_phase_deg`): an NTSC set takes the phasor as U + jV, a PAL set
+//!   un-switches V and, with its delay line, averages each line with the one before;
 //! * optionally, the picture then goes through a composite cable and the TV's Y/C
 //!   separator (`composite`) before it is converted to RGB.
 
@@ -19,7 +23,8 @@ use super::crt;
 use crate::dsp::*;
 use super::interference::video_line_terms;
 use crate::interference_params::InterferenceParams;
-use super::record::line_rotation;
+use crate::standard::{self, ColourTv, TvStandard};
+use super::record::{line_rotation, v_switched, CU_WHOLE_CYCLES_PER_LINE};
 use super::video::{decode_ideal, Baseband, Frame};
 use std::f64::consts::PI;
 
@@ -45,6 +50,13 @@ pub struct DecodeParams {
     /// How much the chroma path lags the luma path, baseband samples
     /// (measured at alignment; the deck's luma delay line cancels it).
     pub chroma_delay: f64,
+    /// Colour decoder of the television the deck feeds.
+    pub tv: ColourTv,
+    /// PAL television: decode with the 1 H delay line (false: simple PAL, one line at a time).
+    pub delay_line: bool,
+    /// Error of the television's colour reference, degrees: an NTSC set's tint control off
+    /// centre or a drifted reference oscillator. It turns the chroma of every line alike.
+    pub tv_phase_deg: f64,
 }
 
 impl Default for DecodeParams {
@@ -61,6 +73,9 @@ impl Default for DecodeParams {
             burst_nominal: 1.0,
             burst_boost: 2.0,
             chroma_delay: 0.0,
+            tv: STANDARD.colour_tv(),
+            delay_line: true,
+            tv_phase_deg: 0.0,
         }
     }
 }
@@ -133,6 +148,44 @@ pub fn find_sync(luma: &[f32], bb0: i64, n0: f64, search: i64) -> Option<f64> {
     None
 }
 
+/// Lines between the two lines the deck's chroma comb adds. At 525 lines the crosstalk of the
+/// neighbouring tracks turns 180 deg from one line to the next relative to the wanted signal
+/// (the two heads rotate +90 and -90 deg per line), so the 1 H comb cancels it. At 625 lines it
+/// turns only 90 deg per line (one head does not rotate) and the V switch flips every line, so
+/// the comb adds line n and line n - 2, where the crosstalk is again opposite and the switch alike.
+const COMB_LINES: usize = if matches!(STANDARD, TvStandard::Pal) { 2 } else { 1 };
+
+/// Angle of the played-back burst on global line `line`, radians: 180 deg at 525 lines; at 625
+/// lines the swinging burst, +135 deg where V is not switched and -135 deg where it is.
+fn burst_angle(line: i64) -> f64 {
+    match STANDARD {
+        TvStandard::Pal if v_switched(line) => -0.75 * PI,
+        TvStandard::Pal => 0.75 * PI,
+        _ => PI,
+    }
+}
+
+/// The television's colour decoding of one line of the deck's chroma `cur` (its phasor per
+/// pixel, V still switched on a PAL tape); `prev` is the line before it in the same field and
+/// `switched` whether V is inverted on this line. Returns `None` where the set passes the
+/// phasor on untouched as U + jV (an NTSC set whose colour reference is exactly right).
+fn television(cur: &[[f32; 2]], prev: Option<&[[f32; 2]]>, switched: bool, p: &DecodeParams) -> Option<Vec<[f32; 2]>> {
+    if p.tv == ColourTv::Ntsc && p.tv_phase_deg == 0.0 {
+        return None;
+    }
+    // the set's reference is off by tv_phase_deg on every line alike
+    let (c, s) = (p.tv_phase_deg.to_radians().cos() as f32, p.tv_phase_deg.to_radians().sin() as f32);
+    let rot = |a: [f32; 2]| [a[0] * c - a[1] * s, a[0] * s + a[1] * c];
+    Some(match (p.tv, prev) {
+        (ColourTv::Ntsc, _) => cur.iter().map(|a| rot(*a)).collect(),
+        (ColourTv::Pal, Some(prev)) if p.delay_line => {
+            cur.iter().zip(prev.iter()).map(|(a, b)| standard::pal_delay_line(rot(*a), rot(*b), switched)).collect()
+        }
+        // simple PAL, or the first line of the field, which has no line before it to average with
+        (ColourTv::Pal, _) => cur.iter().map(|a| standard::pal_simple(rot(*a), switched)).collect(),
+    })
+}
+
 /// Demodulate the colour-under over `[start, start+len)` (global baseband
 /// indices) into complex baseband `(re, im)`.
 pub(crate) fn demod_chroma(view: &StreamView, start: i64, len: usize, p: &DecodeParams) -> (Vec<f32>, Vec<f32>) {
@@ -146,7 +199,7 @@ pub(crate) fn demod_chroma(view: &StreamView, start: i64, len: usize, p: &Decode
         }
         let line = n.div_euclid(BB_PER_LINE as i64);
         let col = n.rem_euclid(BB_PER_LINE as i64) as f64;
-        let th = 2.0 * PI * CU_CYCLES_PER_LINE * col / BB_PER_LINE as f64;
+        let th = 2.0 * PI * CU_WHOLE_CYCLES_PER_LINE * col / BB_PER_LINE as f64;
         let (rc, rs) = line_rotation(head_parity_at(n), line);
         let (c, s) = (th.cos() as f32, th.sin() as f32);
         // carrier phasor e^{j(th+rho)}
@@ -238,7 +291,8 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
             }
             let (br, bi) = (br / 20.0, bi / 20.0);
             let bmag = (br * br + bi * bi).sqrt();
-            let phi = bi.atan2(br) - PI;
+            // the deck's APC compares the burst with the angle it should have on this line
+            let phi = bi.atan2(br) - burst_angle(line);
             let wrap = |a: f64| (a + PI).rem_euclid(2.0 * PI) - PI;
             if j == 0 {
                 phi_s = wrap(phi);
@@ -281,15 +335,25 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
             luma_lines.push(yl);
             chroma_lines.push(cl);
         }
+        // the deck's comb: the crosstalk from the neighbouring tracks cancels between line n
+        // and line n - COMB_LINES, where the wanted chroma (and, at 625 lines, its V switch) is alike
+        let deck_out: Vec<Vec<[f32; 2]>> = (0..FIELD_ACTIVE_LINES)
+            .map(|j| {
+                if p.comb && j >= COMB_LINES {
+                    let (cur, old) = (&chroma_lines[j], &chroma_lines[j - COMB_LINES]);
+                    cur.iter().zip(old.iter()).map(|(a, b)| [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]).collect()
+                } else {
+                    chroma_lines[j].clone()
+                }
+            })
+            .collect();
+        let first_line = k * LINES as i64 + FIELD_FIRST_LINE[field] as i64;
         for j in 0..FIELD_ACTIVE_LINES {
             let base = (FIELD_FIRST_LINE[field] + j) * BB_PER_LINE + ACTIVE_START;
+            let prev = if j > 0 { Some(deck_out[j - 1].as_slice()) } else { None };
+            let tv = television(&deck_out[j], prev, v_switched(first_line + j as i64), p);
             for x in 0..ACTIVE_W {
-                let c = if p.comb && j > 0 {
-                    let (a, b) = (chroma_lines[j][x], chroma_lines[j - 1][x]);
-                    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
-                } else {
-                    chroma_lines[j][x]
-                };
+                let c = tv.as_ref().map_or(deck_out[j][x], |t| t[x]);
                 planes.y[base + x] = luma_lines[j][x];
                 planes.cu[base + x] = c[0];
                 planes.cv[base + x] = c[1];

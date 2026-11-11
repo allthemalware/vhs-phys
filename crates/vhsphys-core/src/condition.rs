@@ -251,7 +251,7 @@ impl Condition {
             "ham-radio" => Self { radio_mod: RadioMod::Ssb, radio_freq_mhz: 3.9, radio_field_vpm: 30.0, ..Self::pristine() },
             "am-station" => Self { radio_mod: RadioMod::Am, radio_freq_mhz: 0.9, radio_field_vpm: 6.0, ..Self::pristine() },
             // the mains of this room is off nominal, as a loaded line is
-            "ground-loop" => Self { ground_loop_mv: 300.0, mains_hz: 59.4, ..Self::pristine() },
+            "ground-loop" => Self { ground_loop_mv: 300.0, mains_hz: MAINS_HZ_DEFAULT - 0.6, ..Self::pristine() },
             "magnet-screen" => Self {
                 crt_magnet: MagnetKind::Neodymium, crt_magnet_z_cm: 33.0, crt_magnet_cm: 20.0, crt_magnet_angle_deg: 20.0, ..Self::pristine()
             },

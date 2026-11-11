@@ -4,9 +4,13 @@
 //! field offset) so that the head-switch position relative to vsync is real.
 //!
 //! Chroma is carried as a complex baseband value `C = cu + j*cv` in IRE, with
-//! `cu` along the +U axis. The colour burst is `-BURST_AMP` on `cu` (180 deg).
+//! `cu` along the +U axis. The colour burst is `-BURST_AMP` on `cu` (180 deg) at 525 lines;
+//! at 625 lines it is `BURST_AMP` at +135 deg (-U + V), the unswitched half of the PAL
+//! swinging burst. The planes hold the unswitched (U, V); the recorder applies the PAL V
+//! switch line by line, because only it knows each line's place in the sequence.
 
 use super::consts::*;
+use crate::standard::TvStandard;
 use std::sync::OnceLock;
 
 /// The RGB frame is shared by both engines; it lives in `crate::frame`.
@@ -30,11 +34,17 @@ impl Baseband {
 struct Structure {
     sync: Vec<f32>,
     burst_line: Vec<bool>,
+    /// Half lines of the vertical interval (equalising or broad pulses), which carry no picture.
+    interval_half: Vec<bool>,
+}
+
+fn structure_all() -> &'static Structure {
+    static S: OnceLock<Structure> = OnceLock::new();
+    S.get_or_init(build_structure)
 }
 
 fn structure() -> (&'static Vec<f32>, &'static Vec<bool>) {
-    static S: OnceLock<Structure> = OnceLock::new();
-    let s = S.get_or_init(build_structure);
+    let s = structure_all();
     (&s.sync, &s.burst_line)
 }
 
@@ -84,7 +94,8 @@ fn build_structure() -> Structure {
             Interval::None => {}
         }
     }
-    Structure { sync, burst_line }
+    let interval_half = interval.iter().map(|i| *i != Interval::None).collect();
+    Structure { sync, burst_line, interval_half }
 }
 
 #[inline]
@@ -129,15 +140,30 @@ pub fn encode_frame(frame: &Frame) -> Baseband {
                 // 4-sample raised-cosine edges keep the burst narrow-band
                 let e = (i.min(BURST_LEN - 1 - i) as f32 / 4.0).min(1.0);
                 let w = 0.5 - 0.5 * (std::f32::consts::PI * e).cos();
-                bb.cu[s0 + i] = -BURST_AMP_IRE * w;
+                match STANDARD {
+                    // PAL: -U + V at 45 degrees, i.e. +135 deg before the line switch; the
+                    // recorder's V switch makes it the swinging burst (+135 / -135 deg)
+                    TvStandard::Pal => {
+                        let h = std::f32::consts::FRAC_1_SQRT_2;
+                        bb.cu[s0 + i] = -BURST_AMP_IRE * h * w;
+                        bb.cv[s0 + i] = BURST_AMP_IRE * h * w;
+                    }
+                    _ => bb.cu[s0 + i] = -BURST_AMP_IRE * w,
+                }
             }
         }
     }
 
+    // The last visible line of the second 625-line field (PAL line 623) is a half line: its
+    // second half carries the equalising pulses, so the picture stops at mid line there.
+    let interval_half = &structure_all().interval_half;
     for row in 0..ACTIVE_H {
         let (line, _) = row_to_line(row);
         let base = line * BB_PER_LINE + ACTIVE_START;
         for x in 0..ACTIVE_W {
+            if interval_half[(base + x) / HALF_LINE_BB] {
+                continue;
+            }
             let p = (row * ACTIVE_W + x) * 3;
             let (r, g, b) = (
                 frame.rgb[p] as f32 / 255.0,
@@ -234,11 +260,27 @@ mod tests {
         let f = test_pattern();
         let bb = encode_frame(&f);
         let g = decode_ideal(&bb);
+        // every pixel the raster carries; at 625 lines the right half of the last row falls on
+        // the half line that holds the equalising pulses (none are left out at 525 lines)
+        let carried = |i: usize| {
+            let (row, x) = (i / 3 / ACTIVE_W, i / 3 % ACTIVE_W);
+            let (line, _) = row_to_line(row);
+            !structure_all().interval_half[(line * BB_PER_LINE + ACTIVE_START + x) / HALF_LINE_BB]
+        };
         let mut worst = 0i32;
-        for (a, b) in f.rgb.iter().zip(g.rgb.iter()) {
+        let mut skipped = 0;
+        for (i, (a, b)) in f.rgb.iter().zip(g.rgb.iter()).enumerate() {
+            if !carried(i) {
+                skipped += 1;
+                continue;
+            }
             worst = worst.max((*a as i32 - *b as i32).abs());
         }
         assert!(worst <= 2, "worst error {worst}");
+        assert!(skipped < 3 * ACTIVE_W, "{skipped} values not carried: more than part of one row");
+        if NTSC {
+            assert_eq!(skipped, 0);
+        }
     }
 
     #[test]

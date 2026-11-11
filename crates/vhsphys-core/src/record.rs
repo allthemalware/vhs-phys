@@ -15,6 +15,7 @@ use super::consts::*;
 use crate::dsp::*;
 use super::emphasis::SubPreemphasis;
 use super::video::Baseband;
+use crate::standard::TvStandard;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
@@ -80,22 +81,44 @@ impl Default for RecordParams {
     }
 }
 
-/// cos/sin of the colour-under carrier phase across one line (`CU_CYCLES_PER_LINE` cycles).
+/// Whole carrier cycles per line. The per-sample carrier table holds only these, so it is the
+/// same on every line; the fraction of a cycle the carrier gains per line (1/8 in the 625-line
+/// format) goes into `line_rotation` with the head's own rotation.
+pub const CU_WHOLE_CYCLES_PER_LINE: f64 = CU_CYCLES_PER_LINE as i64 as f64;
+
+/// Eighths of a turn the carrier gains per line beyond the whole cycles (0 at 525 lines, 1 at 625).
+const CU_EIGHTHS_PER_LINE: i64 = ((CU_CYCLES_PER_LINE - CU_WHOLE_CYCLES_PER_LINE) * 8.0) as i64;
+
+/// cos/sin of the colour-under carrier phase across one line (`CU_WHOLE_CYCLES_PER_LINE` cycles).
 fn carrier_table() -> &'static (Vec<f32>, Vec<f32>) {
     static T: OnceLock<(Vec<f32>, Vec<f32>)> = OnceLock::new();
     T.get_or_init(|| {
-        let c = (0..RF_PER_LINE).map(|r| (2.0 * PI * CU_CYCLES_PER_LINE * r as f64 / RF_PER_LINE as f64).cos() as f32).collect();
-        let s = (0..RF_PER_LINE).map(|r| (2.0 * PI * CU_CYCLES_PER_LINE * r as f64 / RF_PER_LINE as f64).sin() as f32).collect();
+        let c = (0..RF_PER_LINE).map(|r| (2.0 * PI * CU_WHOLE_CYCLES_PER_LINE * r as f64 / RF_PER_LINE as f64).cos() as f32).collect();
+        let s = (0..RF_PER_LINE).map(|r| (2.0 * PI * CU_WHOLE_CYCLES_PER_LINE * r as f64 / RF_PER_LINE as f64).sin() as f32).collect();
         (c, s)
     })
 }
 
-/// Phase rotation applied to the colour-under carrier on a line: `CU_ROTATION_QUARTERS[parity]`
-/// quarter turns per line (525 lines: parity 0 advances +90 deg per line, parity 1 retards 90 deg).
+/// Phase of the colour-under carrier at the start of `line`, relative to the line-periodic
+/// carrier table: `2 pi (frac(CU_CYCLES_PER_LINE) + CU_ROTATION_QUARTERS[parity] / 4) * line`.
+/// At 525 lines the carrier is line locked and only the head's rotation counts (parity 0
+/// advances 90 deg per line, parity 1 retards 90 deg); at 625 lines the carrier also gains an
+/// eighth of a cycle per line. Every term is a whole number of eighths of a turn, so the
+/// phase is counted in eighths modulo 8 and stays exact however large `line` is.
 /// Returns the unit vector (cos, sin) of the rotation.
 pub fn line_rotation(parity: usize, line: i64) -> (f32, f32) {
-    let m = (CU_ROTATION_QUARTERS[parity] * line).rem_euclid(4) as usize;
-    [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)][m]
+    const H: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    const EIGHTHS: [(f32, f32); 8] =
+        [(1.0, 0.0), (H, H), (0.0, 1.0), (-H, H), (-1.0, 0.0), (-H, -H), (0.0, -1.0), (H, -H)];
+    let per_line = CU_EIGHTHS_PER_LINE + 2 * CU_ROTATION_QUARTERS[parity];
+    EIGHTHS[(per_line * line.rem_euclid(8)).rem_euclid(8) as usize]
+}
+
+/// Whether the V axis of `line` (global line index) is inverted. PAL switches V on alternate
+/// lines; the sequence follows the global line count, and as a frame has an odd number of
+/// lines it runs on from one frame into the next. Never in the 525-line engine.
+pub fn v_switched(line: i64) -> bool {
+    STANDARD == TvStandard::Pal && line.rem_euclid(2) == 1
 }
 
 /// Source of baseband video: concatenated frames addressed by baseband sample
@@ -168,7 +191,17 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
     let mut cv = vec![0.0f32; tot];
     src.fill(bb0, &mut y, &mut cu, &mut cv);
 
-    // ---- chroma: burst boost, record band-limiting, then upsample ----
+    // ---- chroma: PAL line switch, burst boost, record band-limiting, then upsample ----
+    // The source is the camera's unswitched (U, V); a PAL coder inverts V, burst included, on
+    // alternate lines before the deck ever sees the chroma, so it is done here ahead of the
+    // deck's band-pass. The switch falls in the sync pulse, clear of the burst and the picture.
+    if STANDARD == TvStandard::Pal {
+        for (i, v) in cv.iter_mut().enumerate() {
+            if v_switched((bb0 + i as i64).div_euclid(BB_PER_LINE as i64)) {
+                *v = -*v;
+            }
+        }
+    }
     for i in 0..tot {
         let col = (bb0 + i as i64).rem_euclid(BB_PER_LINE as i64) as usize;
         if (BURST_START..BURST_START + BURST_LEN).contains(&col) {

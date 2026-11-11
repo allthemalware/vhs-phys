@@ -82,7 +82,11 @@ impl TapeSpeed {
     /// Table 4 of the format for this speed, `(response, tolerance)` in dB per input level
     /// (`SUB_EMPHASIS_LEVEL_DB`) and frequency (`SUB_EMPHASIS_HZ`); none at SP, whose
     /// luminance has only the main emphasis (ST 32 clause 3.9 against 4.3.1.1.1).
+    /// ST 32's slow-speed rules are 525-line rules (`ST32_SLOW_SPEED_RULES`): none otherwise.
     pub fn sub_emphasis_table(self) -> Option<(&'static [[f64; 6]; 4], &'static [[f64; 6]; 4])> {
+        if !ST32_SLOW_SPEED_RULES {
+            return None;
+        }
         match self {
             TapeSpeed::Sp => None,
             TapeSpeed::Lp => Some((&SUB_EMPHASIS_LP_DB, &SUB_EMPHASIS_LP_TOL_DB)),
@@ -92,13 +96,18 @@ impl TapeSpeed {
 
     /// Whether the colour burst is doubled before recording. The format's burst doubler
     /// (ST 32 3.9.2.1.3) applies at SP and, through 4.3.3, at EP; 4.3.1.3 excludes LP.
+    /// Without ST 32's slow-speed rules the burst is doubled at every speed.
     pub fn burst_doubled(self) -> bool {
-        self != TapeSpeed::Lp
+        !ST32_SLOW_SPEED_RULES || self != TapeSpeed::Lp
     }
 
     /// How far the FM carrier recorded by the channel-1 head sits above the channel-2
     /// head's, Hz: half the line frequency at LP and EP (ST 32 4.3.1.2), nothing at SP.
+    /// Without ST 32's slow-speed rules there is no interleave.
     pub fn carrier_interleave_hz(self) -> f64 {
+        if !ST32_SLOW_SPEED_RULES {
+            return 0.0;
+        }
         match self {
             TapeSpeed::Sp => 0.0,
             TapeSpeed::Lp | TapeSpeed::Ep => FH / 2.0,
