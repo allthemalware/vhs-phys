@@ -5,11 +5,15 @@
 //!
 //! Accepted tables: `condition` (see `Condition`), `record`, `deck`, `decode`,
 //! `tape`, `mech`, `tracking`, `head` (both heads), `head0`, `head1`, and the
-//! top-level `seed`.
+//! top-level `seed` and `standard`. `build` refuses what the engine cannot play: another
+//! engine's standard, and EP in the 625-line engine.
 
 use super::camera::{CameraParams, TubeKind};
 use super::condition::Condition;
+use super::consts::{HAS_EP, STANDARD};
+use super::format::TapeSpeed;
 use super::pipeline::Params;
+use crate::standard::{ColourTv, TvStandard};
 
 fn merge(base: &mut toml::Value, over: toml::Value) {
     match (base, over) {
@@ -98,7 +102,37 @@ pub fn build(preset: Option<&str>, text: &str, seed: u64) -> Result<Params, Stri
     if let Some(toml::Value::Integer(s)) = table.get("seed") {
         p.seed = *s as u64;
     }
-    apply_overrides(&p, text)
+    let p = apply_overrides(&p, text)?;
+    check_standard(p)
+}
+
+/// What this engine can play: the 625-line engine records and plays PAL only, into a PAL
+/// television; the 525-line engine plays NTSC into an NTSC television. A 525-line tape into a
+/// PAL television (PAL-60) and composite video into a PAL television are not modelled yet.
+fn check_standard(mut p: Params) -> Result<Params, String> {
+    match STANDARD {
+        TvStandard::Pal => {
+            if p.standard != TvStandard::Pal {
+                return Err(format!("the 625-line engine plays only standard = \"pal\" (got \"{}\")", p.standard.name()));
+            }
+            p.decode.tv = ColourTv::Pal;
+            if p.composite.enabled {
+                return Err("composite video into a PAL television is not modelled yet".into());
+            }
+        }
+        _ => {
+            if p.standard == TvStandard::Pal {
+                return Err("standard = \"pal\" is the 625-line engine, not a setting of the 525-line one".into());
+            }
+            if p.standard == TvStandard::Pal60 || p.decode.tv == ColourTv::Pal {
+                return Err("a PAL television on a 525-line tape (PAL-60) is not modelled yet".into());
+            }
+        }
+    }
+    if p.speed == TapeSpeed::Ep && !HAS_EP {
+        return Err("EP is not a 625-line VHS speed (SP and LP only)".into());
+    }
+    Ok(p)
 }
 
 /// Turn `key=value` strings (as given to `--set`) into TOML text. If a key is
