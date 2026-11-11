@@ -233,7 +233,7 @@ pub(crate) fn demod_chroma(view: &StreamView, start: i64, len: usize, p: &Decode
 pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams, composite: &CompositeParams, itf: &InterferenceParams) -> Frame {
     let mut bb = decode_planes(k, view, p, itf);
     if composite.enabled {
-        composite::roundtrip(&mut bb, k, composite);
+        composite::roundtrip_with_tv(&mut bb, k, composite, p.tv);
     }
     let mut frame = decode_ideal(&bb);
     // nothing acts on the tube without a magnet or a stray field

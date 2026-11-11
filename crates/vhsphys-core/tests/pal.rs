@@ -228,3 +228,21 @@ fn output_is_deterministic_for_a_seed() {
     let b = Session::run(config::build(Some("worn"), "", 5).unwrap(), &input);
     assert!(a.iter().zip(b.iter()).all(|(x, y)| x.rgb == y.rgb));
 }
+
+#[test]
+fn pal_colour_bars_survive_composite_with_every_decoder() {
+    let want = bar_colours(&video::test_pattern());
+    let input: Vec<Frame> = (0..6).map(|_| video::test_pattern()).collect();
+    let plain = render("", &input, 1);
+    for d in ["notch", "comb1h", "comb2h"] {
+        let out = render(&format!("[composite]\nenabled = true\ndecoder = \"{d}\"\n"), &input, 1);
+        let got = bar_colours(&out[3]);
+        for (w, g) in want.iter().zip(got.iter()) {
+            for k in 0..3 {
+                assert!((w[k] - g[k]).abs() < 40.0, "{d}: bar colour {w:?} came out {g:?}");
+            }
+        }
+        let diff: f64 = out[3].rgb.iter().zip(plain[3].rgb.iter()).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum::<f64>() / out[3].rgb.len() as f64;
+        assert!(diff > 0.1, "{d}: composite should visibly affect the picture");
+    }
+}

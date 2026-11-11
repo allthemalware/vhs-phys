@@ -16,6 +16,7 @@
 
 use super::consts::*;
 use crate::dsp::{fir_centred, kaiser_lowpass};
+use crate::standard::{ColourTv, TvStandard};
 use super::video::Baseband;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
@@ -85,6 +86,53 @@ fn subcarrier(frame_index: i64, line: usize, x: usize) -> (f32, f32) {
     (SIN[q], COS[q])
 }
 
+/// `(sin(phi), cos(phi))` of the PAL 4.43 MHz subcarrier at sample `x` of frame line `line` of frame
+/// `frame_index`. The PAL subcarrier (4.43361875 MHz) is continuous time: phi = 2*pi*fsc*t.
+fn subcarrier_pal(frame_index: i64, line: usize, x: usize) -> (f32, f32) {
+    let fsc = 4.433_618_75e6;
+    let n = (frame_index * LINES as i64 + line as i64) * BB_PER_LINE as i64 + x as i64;
+    let phi = 2.0 * std::f64::consts::PI * ((n as f64 * (fsc / FS_BB)).rem_euclid(1.0));
+    (phi.sin() as f32, phi.cos() as f32)
+}
+
+fn pal_chroma_bandpass() -> &'static [f32] {
+    static BP: OnceLock<Vec<f32>> = OnceLock::new();
+    BP.get_or_init(|| {
+        let fsc = 4.433_618_75e6;
+        let fs = FS_BB;
+        let lp = kaiser_lowpass(1.0e6, 1.0e6, 35.0, fs);
+        let n = lp.len();
+        let mid = (n / 2) as i32;
+        let w = 2.0 * std::f64::consts::PI * fsc / fs;
+        let mut bp: Vec<f32> = lp
+            .iter()
+            .enumerate()
+            .map(|(k, &v)| {
+                let d = (k as i32 - mid) as f64;
+                (v as f64 * 2.0 * (w * d).cos()) as f32
+            })
+            .collect();
+        let mean: f32 = bp.iter().sum::<f32>() / n as f32;
+        for x in bp.iter_mut() {
+            *x -= mean;
+        }
+        let gain: f32 = bp
+            .iter()
+            .enumerate()
+            .map(|(k, &v)| v * (w * (k as i32 - mid) as f64).cos() as f32)
+            .sum();
+        for x in bp.iter_mut() {
+            *x /= gain;
+        }
+        bp
+    })
+}
+
+fn pal_chroma_filter() -> &'static [f32] {
+    static F: OnceLock<Vec<f32>> = OnceLock::new();
+    F.get_or_init(|| kaiser_lowpass(1.0e6, 0.6e6, 50.0, FS_BB))
+}
+
 /// Frame lines carrying picture, field by field.
 fn field_lines(field: usize) -> std::ops::Range<usize> {
     FIELD_FIRST_LINE[field]..FIELD_FIRST_LINE[field] + FIELD_ACTIVE_LINES
@@ -95,6 +143,12 @@ fn field_lines(field: usize) -> std::ops::Range<usize> {
 /// phase pattern repeats every two frames. Only the active picture is processed; sync,
 /// blanking and burst are left alone.
 pub fn roundtrip(bb: &mut Baseband, frame_index: i64, p: &CompositeParams) {
+    roundtrip_with_tv(bb, frame_index, p, STANDARD.colour_tv());
+}
+
+/// Encode and decode composite video matching the television's colour decoder (NTSC or PAL).
+pub fn roundtrip_with_tv(bb: &mut Baseband, frame_index: i64, p: &CompositeParams, tv: ColourTv) {
+    let is_pal = tv == ColourTv::Pal || STANDARD == TvStandard::Pal;
     // Composite of every picture line. The whole line goes through the filters so they
     // see real blanking around the picture rather than an artificial edge; colour is
     // gated to the active picture, as the TV's demodulator ignores everything outside it
@@ -103,11 +157,25 @@ pub fn roundtrip(bb: &mut Baseband, frame_index: i64, p: &CompositeParams) {
     for field in 0..2 {
         for line in field_lines(field) {
             let base = line * BB_PER_LINE;
+            let switched = (frame_index * LINES as i64 + line as i64).rem_euclid(2) == 1;
+            let s_v = if switched { -1.0f32 } else { 1.0f32 };
             composite[line] = (0..BB_PER_LINE)
                 .map(|x| {
                     let n = base + x;
-                    let (s, c) = subcarrier(frame_index, line, x);
-                    let chroma = if is_active(x) { bb.cu[n] * s + bb.cv[n] * c } else { 0.0 };
+                    let (s, c) = if is_pal {
+                        subcarrier_pal(frame_index, line, x)
+                    } else {
+                        subcarrier(frame_index, line, x)
+                    };
+                    let chroma = if is_active(x) {
+                        if is_pal {
+                            bb.cu[n] * s + s_v * bb.cv[n] * c
+                        } else {
+                            bb.cu[n] * s + bb.cv[n] * c
+                        }
+                    } else {
+                        0.0
+                    };
                     bb.y[n] + chroma
                 })
                 .collect();
@@ -117,8 +185,12 @@ pub fn roundtrip(bb: &mut Baseband, frame_index: i64, p: &CompositeParams) {
     for field in 0..2 {
         let lines = field_lines(field);
         for line in lines.clone() {
-            let chroma = separate_chroma(&composite, line, &lines, p.decoder);
-            let (cu, cv) = demodulate(&chroma, frame_index, line);
+            let chroma = separate_chroma(&composite, line, &lines, p.decoder, is_pal);
+            let (cu, cv) = if is_pal {
+                demodulate_pal(&chroma, frame_index, line)
+            } else {
+                demodulate(&chroma, frame_index, line)
+            };
             let base = line * BB_PER_LINE;
             for x in ACTIVE_START..ACTIVE_START + ACTIVE_W {
                 bb.y[base + x] = composite[line][x] - chroma[x];
@@ -136,27 +208,29 @@ fn is_active(x: usize) -> bool {
 /// The modulated chroma the separator extracts from the composite of `line`; the luma is
 /// what is left over.
 ///
-/// The subcarrier is inverted on the neighbouring lines, so a comb's line difference
-/// keeps the chroma and cancels whatever luma the lines share, at every horizontal
-/// frequency: fine luma detail stays luma, but colour that changes from line to line
-/// leaves half its difference in the luma (hanging dots), and the luma is averaged
-/// vertically (1H: with the line above; 2H: 1-2-1 over three lines). The luma difference
-/// that lands in the comb's chroma is demodulated to fsc and removed by the chroma
-/// low-pass. A comb needs the neighbouring lines of the same field; where one is missing
-/// (the first or last picture line of a field) the separator falls back to the notch.
-fn separate_chroma(composite: &[Vec<f32>], line: usize, field: &std::ops::Range<usize>, decoder: CompositeDecoder) -> Vec<f32> {
+/// In NTSC, the subcarrier is inverted on adjacent lines (1H). In PAL, the subcarrier inverts
+/// and the V-switch phase matches over two lines (2H comb). Where neighbouring lines of the
+/// field are missing (field boundaries), the separator falls back to the notch.
+fn separate_chroma(composite: &[Vec<f32>], line: usize, field: &std::ops::Range<usize>, decoder: CompositeDecoder, is_pal: bool) -> Vec<f32> {
     let has = |l: usize| field.contains(&l);
     let c = &composite[line];
+    let step = if is_pal { 2 } else { 1 };
     match decoder {
-        CompositeDecoder::Comb1h if has(line - 1) => {
-            let a = &composite[line - 1];
+        CompositeDecoder::Comb1h if line >= step && has(line - step) => {
+            let a = &composite[line - step];
             c.iter().zip(a).map(|(c, a)| 0.5 * (c - a)).collect()
         }
-        CompositeDecoder::Comb2h if has(line - 1) && has(line + 1) => {
-            let (a, b) = (&composite[line - 1], &composite[line + 1]);
+        CompositeDecoder::Comb2h if line >= step && has(line - step) && has(line + step) => {
+            let (a, b) = (&composite[line - step], &composite[line + step]);
             c.iter().zip(a).zip(b).map(|((c, a), b)| 0.25 * (2.0 * c - a - b)).collect()
         }
-        _ => fir_centred(c, &CHROMA_BANDPASS),
+        _ => {
+            if is_pal {
+                fir_centred(c, pal_chroma_bandpass())
+            } else {
+                fir_centred(c, &CHROMA_BANDPASS)
+            }
+        }
     }
 }
 
@@ -175,6 +249,22 @@ fn demodulate(chroma: &[f32], frame_index: i64, line: usize) -> (Vec<f32>, Vec<f
     let f = chroma_filters();
     let (i, q) = (fir_centred(&i, &f.i), fir_centred(&q, &f.q));
     i.iter().zip(&q).map(|(&i, &q)| (-i * sr + q * cr, i * cr + q * sr)).unzip()
+}
+
+/// Synchronous demodulation of the separated chroma of `line` to `(cu, cv)` for a PAL television,
+/// with the V un-switching and symmetric 1.3 MHz low-pass filtering.
+fn demodulate_pal(chroma: &[f32], frame_index: i64, line: usize) -> (Vec<f32>, Vec<f32>) {
+    let f_pal = pal_chroma_filter();
+    let switched = (frame_index * LINES as i64 + line as i64).rem_euclid(2) == 1;
+    let s_v = if switched { -1.0f32 } else { 1.0f32 };
+    let mut u = Vec::with_capacity(chroma.len());
+    let mut v = Vec::with_capacity(chroma.len());
+    for (x, &c) in chroma.iter().enumerate() {
+        let (s, co) = subcarrier_pal(frame_index, line, x);
+        u.push(2.0 * c * s);
+        v.push(2.0 * c * co * s_v);
+    }
+    (fir_centred(&u, f_pal), fir_centred(&v, f_pal))
 }
 
 #[cfg(test)]

@@ -12,7 +12,7 @@ use super::condition::Condition;
 use super::consts::{HAS_EP, STANDARD};
 use super::format::TapeSpeed;
 use super::pipeline::Params;
-use crate::standard::{ColourTv, TvStandard};
+use crate::standard::TvStandard;
 
 fn merge(base: &mut toml::Value, over: toml::Value) {
     match (base, over) {
@@ -97,7 +97,7 @@ pub fn build(preset: Option<&str>, text: &str, seed: u64) -> Result<Params, Stri
 /// What this engine can play: the 625-line engine records and plays PAL only, into a PAL
 /// television; the 525-line engine records NTSC and plays it into an NTSC television, or, with
 /// `standard = "pal60"`, into a PAL television. The television follows the standard (whatever
-/// `decode.tv` was set to). Composite video into a PAL television is not modelled yet.
+/// `decode.tv` was set to).
 fn check_standard(mut p: Params) -> Result<Params, String> {
     match STANDARD {
         TvStandard::Pal => {
@@ -112,9 +112,6 @@ fn check_standard(mut p: Params) -> Result<Params, String> {
         }
     }
     p.decode.tv = p.standard.colour_tv();
-    if p.decode.tv == ColourTv::Pal && p.composite.enabled {
-        return Err("composite PAL is not modelled yet".into());
-    }
     if p.speed == TapeSpeed::Ep && !HAS_EP {
         return Err("EP is not a 625-line VHS speed (SP and LP only)".into());
     }
@@ -172,6 +169,7 @@ pub fn generation_params(preset: Option<&str>, text: &str, seed: u64, generation
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::ColourTv;
 
     #[test]
     fn overrides_reach_individual_fields() {
@@ -223,13 +221,14 @@ mod tests {
             assert_eq!(n.unwrap().decode.tv, ColourTv::Pal);
             assert!(build(None, "standard = \"ntsc\"\n", 1).is_err());
             assert!(build(None, "standard = \"pal60\"\n", 1).is_err());
+            assert!(build(None, "[composite]\nenabled = true\n", 1).is_ok());
         } else {
             let n = n.unwrap();
             assert_eq!((n.standard, n.decode.tv), (TvStandard::Ntsc, ColourTv::Ntsc));
             let p = build(None, "standard = \"pal60\"\n[decode]\ntv = \"ntsc\"\n", 1).unwrap();
             assert_eq!((p.standard, p.decode.tv), (TvStandard::Pal60, ColourTv::Pal));
             assert!(build(None, "standard = \"pal\"\n", 1).is_err());
-            assert!(build(None, "standard = \"pal60\"\n[composite]\nenabled = true\n", 1).is_err());
+            assert!(build(None, "standard = \"pal60\"\n[composite]\nenabled = true\n", 1).is_ok());
             assert!(build(None, "[composite]\nenabled = true\n", 1).is_ok());
         }
     }

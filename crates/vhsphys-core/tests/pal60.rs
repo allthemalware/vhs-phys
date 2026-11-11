@@ -112,7 +112,13 @@ fn pal60_without_the_delay_line_shows_hanover_bars() {
 }
 
 #[test]
-fn composite_into_a_pal_television_is_refused_until_it_is_modelled() {
-    let e = config::build(Some("pristine"), "standard = \"pal60\"\n[composite]\nenabled = true\n", 1);
-    assert!(e.is_err());
+fn pal60_colour_bars_survive_composite_with_every_decoder() {
+    let input: Vec<Frame> = (0..6).map(|_| test_pattern()).collect();
+    let plain = &render("standard = \"pal60\"\n", &input)[3];
+    for d in ["notch", "comb1h", "comb2h"] {
+        let out = &render(&format!("standard = \"pal60\"\n[composite]\nenabled = true\ndecoder = \"{d}\"\n"), &input)[3];
+        assert_eq!((out.w, out.h), (plain.w, plain.h));
+        let diff: f64 = out.rgb.iter().zip(plain.rgb.iter()).map(|(a, b)| (*a as f64 - *b as f64).abs()).sum::<f64>() / out.rgb.len() as f64;
+        assert!(diff > 0.1, "{d}: composite should visibly affect the picture");
+    }
 }

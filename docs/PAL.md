@@ -7,10 +7,12 @@ unchanged by it: every 625-line rule is chosen by `consts::STANDARD` or follows 
 the 525-line output stays bit-identical (`tests/golden.rs`).
 
 `config::build` in the `pal` engine accepts only `standard = "pal"`, always decodes with a PAL
-television (`decode.tv = "pal"`), and refuses `tape_speed = "ep"` and `composite.enabled` (see "Not
-modelled"). The 525-line engine accepts `standard = "ntsc"` (NTSC television) and `standard =
-"pal60"` (PAL television, see "PAL-60"); it refuses `standard = "pal"` (that is this engine). In both
-engines the television follows the standard, and composite video into a PAL television is refused.
+television (`decode.tv = "pal"`), and refuses `tape_speed = "ep"`. The 525-line engine accepts
+`standard = "ntsc"` (NTSC television) and `standard = "pal60"` (PAL television, see "PAL-60");
+it refuses `standard = "pal"` (that is this engine). In both engines the television follows the
+standard. Composite video (`composite.enabled = true`) is supported in both engines: 3.58 MHz
+subcarrier with 1H comb for NTSC, and 4.43 MHz subcarrier with 2H comb and notch separation for
+PAL and PAL-60.
 
 ## Sources
 
@@ -147,7 +149,6 @@ Carried over from the 525-line format without a 625-line source:
   (`ST32_SLOW_SPEED_RULES = false`). PAL LP is SP at half the tape speed: narrower tracks, more noise
   and crosstalk, the doubled burst, no sub-emphasis.
 * **EP**: not part of the 625-line format; `config::build` refuses it.
-* **Composite PAL**: the composite stage (`composite.rs`) is an NTSC encoder and decoder; with a PAL
-  television (the 625-line engine or PAL-60) `config::build` refuses `composite.enabled`.
-* The 4.43 MHz subcarrier itself: as in the 525-line engine, the chroma is a complex baseband
-  envelope from the camera to the television.
+* **Deck 4.43 MHz subcarrier**: in the deck RF and colour-under paths, chroma is handled as baseband
+  and 627 kHz colour-under; the 4.43 MHz subcarrier is synthesized in the composite stage and
+  television decoder.

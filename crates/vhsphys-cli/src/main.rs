@@ -434,7 +434,7 @@ fn run(a: RunArgs) -> Result<()> {
     // into the config text, where every later generation derives its own seed from it. The
     // other `--set` items apply to every generation as they are. So does `--set standard=...`
     // and for the same reason: the standard decides which engine reads the config, and the
-    // engine refuses what it cannot play (EP at 625 lines, composite video into a PAL set), which
+    // engine refuses what it cannot play (EP at 625 lines), which
     // only happens for a standard that is in the text.
     let (seed_sets, other_sets) = take_key(a.sets.clone(), "seed");
     let (standard_sets, mut other_sets) = take_key(other_sets, "standard");
@@ -733,10 +733,10 @@ mod tests {
     fn overrides_are_checked_like_the_config() {
         let sets = |s: &str| config::sets_to_toml(&[s.to_string()]).unwrap();
         assert!(Pal625::generations("worn", "standard = \"pal\"\n", 1, 1, &sets("speed=ep")).is_err());
-        assert!(Pal625::generations("worn", "standard = \"pal\"\n", 1, 1, &sets("composite.enabled=true")).is_err());
+        assert!(Pal625::generations("worn", "standard = \"pal\"\n", 1, 1, &sets("composite.enabled=true")).is_ok());
         assert!(Pal625::generations("worn", "standard = \"pal\"\n", 1, 1, &sets("tape.passes=3")).is_ok());
         assert!(Ntsc525::generations("worn", "", 1, 1, &sets("speed=ep")).is_ok());
-        assert!(Ntsc525::generations("worn", "standard = \"pal60\"\n", 1, 1, &sets("composite.enabled=true")).is_err());
+        assert!(Ntsc525::generations("worn", "standard = \"pal60\"\n", 1, 1, &sets("composite.enabled=true")).is_ok());
         // an override of a table the file also has adds to it
         let file = "standard = \"pal\"\n[tape]\npasses = 2.0\n";
         assert!(Pal625::generations("worn", file, 1, 1, &sets("tape.defects_per_mm2=0.1")).is_ok());
@@ -747,7 +747,7 @@ mod tests {
         let ep = "[condition]\ntape_speed = \"ep\"\n";
         assert!(Pal625::generations("worn", &format!("standard = \"pal\"\n{ep}"), 1, 1, "").is_err());
         assert!(Ntsc525::generations("worn", ep, 1, 1, "").is_ok());
-        assert!(Pal625::generations("worn", "standard = \"pal\"\n[composite]\nenabled = true\n", 1, 1, "").is_err());
+        assert!(Pal625::generations("worn", "standard = \"pal\"\n[composite]\nenabled = true\n", 1, 1, "").is_ok());
         assert!(Ntsc525::generations("worn", "standard = \"pal60\"\n", 1, 1, "").is_ok());
         assert!(Ntsc525::generations("worn", "standard = \"pal\"\n", 1, 1, "").is_err());
     }
