@@ -20,15 +20,17 @@ from pathlib import Path
 from typing import Any
 
 from vhsgui.model import (
-    FPS,
-    FPS_DEN,
-    FPS_NUM,
+    DEFAULT_STANDARD,
+    FRAME_RATES,
     LEAD_FRAMES,
     LOG_CHARS,
     PREVIEW_MAX_SIZE,
     AUDIO_MODES,
+    CAMERA_TUBES,
+    IRIS_STOPS_RANGE,
     MAX_GENERATIONS,
     SIGNALS,
+    STANDARDS,
     GuiError,
     Look,
     MediaInfo,
@@ -37,6 +39,7 @@ from vhsgui.model import (
     Progress,
     JobState,
     RunRequest,
+    fps_of,
     frame_time,
 )
 
@@ -50,6 +53,7 @@ MICROSECONDS = 1_000_000  # seeks are cut to this resolution
 ASPECT_TOLERANCE_STEPS = 8  # even widths tried below the largest one while fitting the aspect ratio
 DEFAULT_SIGNAL = "svideo"  # the deck's own Y/C: no composite stage is configured
 DEFAULT_AUDIO = "process"  # the core's default, so no flag is needed
+DEFAULT_CAMERA_TUBE = "off"  # no pickup tube is simulated, so neither camera flag is needed
 EVEN = 2  # video encoders need even frame dimensions
 ASPECT_EPSILON = 1e-9  # guards the floor of sizes that are exact in theory but not in floats
 
@@ -232,10 +236,10 @@ def probe(path: str | Path, ffprobe: str = "ffprobe") -> MediaInfo:
 # ---------------------------------------------------------------- frame alignment
 
 
-def snap_start(seconds: float) -> tuple[int, float]:
-    """The frame at or nearest to `seconds`, and its start time."""
-    frame = max(0, round(seconds * FPS))
-    return frame, frame_time(frame)
+def snap_start(seconds: float, standard: str = DEFAULT_STANDARD) -> tuple[int, float]:
+    """The frame at or nearest to `seconds` at the rate of `standard`, and its start time."""
+    frame = max(0, round(seconds * fps_of(standard)))
+    return frame, frame_time(frame, standard)
 
 
 def _preview_size(info: MediaInfo, max_size: tuple[int, int]) -> tuple[int, int]:
@@ -258,13 +262,20 @@ def _preview_size(info: MediaInfo, max_size: tuple[int, int]) -> tuple[int, int]
     return best[1], best[2]
 
 
-def preview_plan(info: MediaInfo, at: float, length: float, max_size: tuple[int, int] = PREVIEW_MAX_SIZE) -> PreviewPlan:
-    """Which frames to render and show for a preview of `length` seconds around `at`."""
-    total = info.frames if info.duration > 0 else None
-    start_frame = max(0, round(at * FPS))
+def preview_plan(
+    info: MediaInfo,
+    at: float,
+    length: float,
+    max_size: tuple[int, int] = PREVIEW_MAX_SIZE,
+    standard: str = DEFAULT_STANDARD,
+) -> PreviewPlan:
+    """Which frames to render and show for a preview of `length` seconds around `at`, at the rate of `standard`."""
+    rate = fps_of(standard)
+    total = info.frames_at(standard) if info.duration > 0 else None
+    start_frame = max(0, round(at * rate))
     if total is not None:
         start_frame = min(start_frame, max(0, total - 1))
-    frames = max(1, round(length * FPS))
+    frames = max(1, round(length * rate))
     if total is not None:
         frames = max(1, min(frames, total - start_frame))
     lead = min(LEAD_FRAMES, start_frame)
@@ -272,8 +283,8 @@ def preview_plan(info: MediaInfo, at: float, length: float, max_size: tuple[int,
         start_frame=start_frame,
         lead_frames=lead,
         frames=frames,
-        start=frame_time(start_frame - lead),
-        duration=frame_time(lead + frames),
+        start=frame_time(start_frame - lead, standard),
+        duration=frame_time(lead + frames, standard),
         size=_preview_size(info, max_size),
     )
 
@@ -338,6 +349,13 @@ def _deep_merge(base: dict[str, Any], over: dict[str, Any]) -> None:
             base[key] = value
 
 
+def _iris_in_range(value: Any) -> bool:
+    """True for a real number inside IRIS_STOPS_RANGE (a bool is not a number here)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return IRIS_STOPS_RANGE[0] <= value <= IRIS_STOPS_RANGE[1]
+
+
 def merge_config(look: Look) -> str:
     """TOML for the core: the condition controls with the advanced tables merged on top."""
     try:
@@ -346,6 +364,12 @@ def merge_config(look: Look) -> str:
         raise GuiError(f"Advanced settings: {err}") from None
     if look.signal not in SIGNALS:
         raise GuiError(f"Unknown output signal '{look.signal}'")
+    if look.standard not in STANDARDS:
+        raise GuiError(f"Unknown television standard '{look.standard}'")
+    if look.camera_tube not in CAMERA_TUBES:
+        raise GuiError(f"Unknown camera tube '{look.camera_tube}'")
+    if not _iris_in_range(look.iris_stops):
+        raise GuiError(f"The iris must be between {IRIS_STOPS_RANGE[0]:g} and {IRIS_STOPS_RANGE[1]:g} stops")
     doc: dict[str, Any] = {"condition": dict(look.condition)} if look.condition else {}
     if look.signal != DEFAULT_SIGNAL:
         doc["composite"] = {"enabled": True, "decoder": look.signal}
@@ -366,6 +390,9 @@ def save_look(look: Look) -> str:
         "generations": look.generations,
         "signal": look.signal,
         "audio": look.audio,
+        "standard": look.standard,
+        "camera_tube": look.camera_tube,
+        "iris_stops": float(look.iris_stops),  # always written with a '.', so it reads back as a float
         "advanced": look.advanced,
     }
     lines = ["[look]"] + [f"{key} = {_toml_value(value)}" for key, value in fields.items()]
@@ -404,6 +431,15 @@ def load_look(text: str) -> Look:
     audio = section.get("audio", defaults.audio)
     if audio not in AUDIO_MODES:
         raise GuiError(f"Look file: audio must be one of {', '.join(AUDIO_MODES)}")
+    standard = section.get("standard", defaults.standard)
+    if standard not in STANDARDS:
+        raise GuiError(f"Look file: standard must be one of {', '.join(STANDARDS)}")
+    camera_tube = section.get("camera_tube", defaults.camera_tube)
+    if camera_tube not in CAMERA_TUBES:
+        raise GuiError(f"Look file: camera_tube must be one of {', '.join(CAMERA_TUBES)}")
+    iris_stops = section.get("iris_stops", defaults.iris_stops)
+    if not _iris_in_range(iris_stops):
+        raise GuiError(f"Look file: iris_stops must be a number from {IRIS_STOPS_RANGE[0]:g} to {IRIS_STOPS_RANGE[1]:g}")
     advanced = section.get("advanced", defaults.advanced)
     if not isinstance(advanced, str):
         raise GuiError("Look file: advanced must be a string")
@@ -423,6 +459,9 @@ def load_look(text: str) -> Look:
         generations=generations,
         signal=output_signal,
         audio=audio,
+        standard=standard,
+        camera_tube=camera_tube,
+        iris_stops=float(iris_stops),
     )
 
 
@@ -452,9 +491,13 @@ def run_args(binary: Path | str, req: RunRequest, config_path: Path | str | None
         args += ["--generations", str(req.look.generations)]
     if req.look.audio != DEFAULT_AUDIO:
         args += ["--audio", req.look.audio]
+    if req.look.standard != DEFAULT_STANDARD:
+        args += ["--standard", req.look.standard]
+    if req.look.camera_tube != DEFAULT_CAMERA_TUBE:
+        args += ["--camera-tube", req.look.camera_tube, "--iris-stops", repr(float(req.look.iris_stops))]
     if config_path is not None:
         args += ["--config", str(config_path)]
-    frame, seconds = snap_start(req.start)
+    frame, seconds = snap_start(req.start, req.look.standard)
     if frame > 0:
         args += ["--start", _micros(seconds)]
     if req.duration is not None:
@@ -483,12 +526,20 @@ def partial_path(output: str | Path) -> Path:
     return path.with_name(f".{path.stem}.partial{path.suffix}")
 
 
-def decode_args(ffmpeg: str, path: str | Path, size: tuple[int, int], start: float = 0.0, frames: int | None = None) -> list[str]:
-    """An ffmpeg command writing packed RGB24 frames of `size` to stdout, from `start` on."""
+def decode_args(
+    ffmpeg: str,
+    path: str | Path,
+    size: tuple[int, int],
+    start: float = 0.0,
+    frames: int | None = None,
+    standard: str = DEFAULT_STANDARD,
+) -> list[str]:
+    """An ffmpeg command writing packed RGB24 frames of `size` to stdout, from `start` on, at the rate of `standard`."""
+    num, den = FRAME_RATES[standard]
     args = [ffmpeg, "-v", "error"]
     if start > 0:
         args += ["-ss", _micros(start)]
-    args += ["-i", str(path), "-an", "-vf", f"fps={FPS_NUM}/{FPS_DEN},scale={size[0]}:{size[1]}:flags=bicubic"]
+    args += ["-i", str(path), "-an", "-vf", f"fps={num}/{den},scale={size[0]}:{size[1]}:flags=bicubic"]
     if frames is not None:
         args += ["-frames:v", str(frames)]
     args += ["-pix_fmt", "rgb24", "-f", "rawvideo", "pipe:1"]

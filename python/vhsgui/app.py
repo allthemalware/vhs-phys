@@ -54,12 +54,15 @@ from PySide6.QtWidgets import (
 from vhsgui import backend
 from vhsgui.model import (
     AUDIO_MODES,
+    CAMERA_TUBES,
     CONDITION_FIELDS,
-    FPS,
+    DEFAULT_STANDARD,
     GROUPS,
+    IRIS_STOPS_RANGE,
     MAX_GENERATIONS,
     PREVIEW_DEFAULT_SECONDS,
     SIGNALS,
+    STANDARDS,
     FieldSpec,
     Frames,
     GuiError,
@@ -68,6 +71,7 @@ from vhsgui.model import (
     MediaInfo,
     PreviewPlan,
     RunRequest,
+    fps_of,
     frame_time,
 )
 from vhsgui.schematic.view import SchematicView
@@ -83,7 +87,7 @@ ERROR_STYLE = "color: #c0392b;"
 
 POLL_MS = 100  # how often running jobs are looked at
 DEBOUNCE_MS = 150  # wait after the last move of the position slider before decoding a frame
-PLAY_INTERVAL_MS = round(1000 / FPS)  # preview playback runs at the core's frame rate
+MS_PER_SECOND = 1000  # preview playback ticks once per frame period of the television standard
 CLOSE_WAIT_MS = 5000  # longest wait for killed processes when the window closes
 CLOSE_POLL_MS = 50
 
@@ -111,6 +115,10 @@ CONFIG_FILE = "look.toml"
 # Menu texts, in the order of SIGNALS and AUDIO_MODES.
 SIGNAL_LABELS = ("S-Video", "Composite, notch", "Composite, 1-line comb", "Composite, 2-line comb")
 AUDIO_LABELS = ("Simulate", "Keep original", "Remove")
+STANDARD_LABELS = ("NTSC", "PAL", "PAL-60")  # in the order of STANDARDS
+CAMERA_TUBE_LABELS = ("None", "Plumbicon", "Plumbicon with light bias", "Plumbicon, anti-comet-tail gun")  # in the order of CAMERA_TUBES
+IRIS_STEP = 0.5  # stops per click of the iris box
+IRIS_DECIMALS = 1
 PREVIEW_AUDIO = "none"  # a preview is only looked at, so the sound is never rendered for it
 
 SPLIT_DEFAULT = 0.5  # the divider starts in the middle
@@ -150,6 +158,22 @@ LOOK_HELP = {
     "signal": "How the picture is separated again: S-Video keeps luma and chroma apart, notch and comb filters mix them the way a TV does.",
     "audio": "The sound track: simulated with the same wear, copied unchanged, or removed.",
 }
+# Tooltips of the controls that live only in the panels (the schematic does not mirror them).
+STANDARD_HELP = (
+    "The television standard of the set that plays the tape. NTSC is the 525-line picture of North America and Japan, "
+    "PAL the 625-line picture of Europe. PAL-60 is an NTSC tape played on a PAL set: the picture keeps NTSC timing, "
+    "but the set decodes its colour the PAL way."
+)
+CAMERA_TUBE_HELP = (
+    "The pickup tube of the camera that filmed the picture. A Plumbicon tube lags a little, and a bright light "
+    "left in view when the iris is wide open smears into a comet tail. The bias and anti-comet-tail variants "
+    "are the cures the makers used."
+)
+IRIS_HELP = (
+    "How far the camera's iris is opened beyond normal exposure, in stops. Each stop doubles the light, "
+    "so a wide iris overexposes the highlights and brings out the tube's comet tails. "
+    "It only matters when a camera tube is chosen."
+)
 SCHEMATIC_MIN_WIDTH = 1240
 SCHEMATIC_MIN_HEIGHT = 880
 SCHEMATIC_BOTTOM_MAX_HEIGHT = 250
@@ -347,6 +371,7 @@ class MainWindow(QMainWindow):
         self.original_frames: Frames | None = None
         self.processed_frames: Frames | None = None
         self._frame_index = 0
+        self._frames_standard = DEFAULT_STANDARD  # the standard the shown frames were rendered at
         self._playing = False
         self._source: _SourceRequest | None = None
 
@@ -386,8 +411,7 @@ class MainWindow(QMainWindow):
         self._source_timer.setSingleShot(True)
         self._source_timer.setInterval(DEBOUNCE_MS)
         self._source_timer.timeout.connect(self._request_source)
-        self._play_timer = QTimer(self)
-        self._play_timer.setInterval(PLAY_INTERVAL_MS)
+        self._play_timer = QTimer(self)  # its interval is set where playback starts
         self._play_timer.timeout.connect(self._advance_frame)
 
         space = QShortcut(QKeySequence(Qt.Key.Key_Space), self._panels_area)
@@ -472,6 +496,9 @@ class MainWindow(QMainWindow):
             generations=self.generations_spin.value(),
             signal=self.signal_combo.currentData(),
             audio=self.audio_combo.currentData(),
+            standard=self.standard_combo.currentData(),
+            camera_tube=self.camera_tube_combo.currentData(),
+            iris_stops=self.iris_spin.value(),
         )
 
     def open_input(self, path: str) -> None:
@@ -713,6 +740,34 @@ class MainWindow(QMainWindow):
             self.audio_combo.addItem(text, value)
         self.audio_combo.currentIndexChanged.connect(self._on_look_changed)
 
+        self.standard_combo = QComboBox()
+        self.standard_combo.setObjectName("field_standard")
+        for text, value in zip(STANDARD_LABELS, STANDARDS, strict=True):
+            self.standard_combo.addItem(text, value)
+        standard_label = QLabel("Standard")
+        for widget in (standard_label, self.standard_combo):
+            widget.setToolTip(STANDARD_HELP)
+        self.standard_combo.currentIndexChanged.connect(self._on_look_changed)
+        self.camera_tube_combo = QComboBox()
+        self.camera_tube_combo.setObjectName("field_camera_tube")
+        for text, value in zip(CAMERA_TUBE_LABELS, CAMERA_TUBES, strict=True):
+            self.camera_tube_combo.addItem(text, value)
+        camera_tube_label = QLabel("Camera tube")
+        for widget in (camera_tube_label, self.camera_tube_combo):
+            widget.setToolTip(CAMERA_TUBE_HELP)
+        self.camera_tube_combo.currentIndexChanged.connect(self._on_camera_tube_changed)
+        self.iris_spin = QDoubleSpinBox()
+        self.iris_spin.setObjectName("field_iris_stops")
+        self.iris_spin.setRange(*IRIS_STOPS_RANGE)
+        self.iris_spin.setSingleStep(IRIS_STEP)
+        self.iris_spin.setDecimals(IRIS_DECIMALS)
+        self.iris_spin.setSuffix(" stops")
+        self.iris_spin.valueChanged.connect(self._on_look_changed)
+        iris_label = QLabel("Iris")
+        for widget in (iris_label, self.iris_spin):
+            widget.setToolTip(IRIS_HELP)
+        self._update_iris_enabled()
+
         self.save_look_button = QPushButton("Save look...")
         self.save_look_button.setObjectName("saveLookButton")
         self.save_look_button.clicked.connect(self._browse_save_look)
@@ -734,8 +789,14 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.signal_combo, 3, 1, 1, 2)
         grid.addWidget(QLabel("Sound"), 4, 0)
         grid.addWidget(self.audio_combo, 4, 1, 1, 2)
-        grid.addWidget(self.reset_button, 5, 0, 1, 3)
-        grid.addLayout(look_files, 6, 0, 1, 3)
+        grid.addWidget(standard_label, 5, 0)
+        grid.addWidget(self.standard_combo, 5, 1, 1, 2)
+        grid.addWidget(camera_tube_label, 6, 0)
+        grid.addWidget(self.camera_tube_combo, 6, 1, 1, 2)
+        grid.addWidget(iris_label, 7, 0)
+        grid.addWidget(self.iris_spin, 7, 1)
+        grid.addWidget(self.reset_button, 8, 0, 1, 3)
+        grid.addLayout(look_files, 9, 0, 1, 3)
         grid.setColumnStretch(1, 1)
         return box
 
@@ -1135,6 +1196,14 @@ class MainWindow(QMainWindow):
             if not self._sync_guard:
                 self._sync_schematic()
 
+    def _update_iris_enabled(self) -> None:
+        # Without a tube the camera adds nothing, so the iris has no effect to set.
+        self.iris_spin.setEnabled(self.camera_tube_combo.currentData() != backend.DEFAULT_CAMERA_TUBE)
+
+    def _on_camera_tube_changed(self, *_args: object) -> None:
+        self._update_iris_enabled()
+        self._on_look_changed()
+
     def _on_advanced_changed(self) -> None:
         self._advanced_error = backend.validate_advanced(self.advanced_edit.toPlainText())
         self.advanced_status.setText(self._advanced_error or "")
@@ -1191,6 +1260,9 @@ class MainWindow(QMainWindow):
         self.generations_spin.setValue(look.generations)
         self.signal_combo.setCurrentIndex(self.signal_combo.findData(look.signal))
         self.audio_combo.setCurrentIndex(self.audio_combo.findData(look.audio))
+        self.standard_combo.setCurrentIndex(self.standard_combo.findData(look.standard))
+        self.camera_tube_combo.setCurrentIndex(self.camera_tube_combo.findData(look.camera_tube))
+        self.iris_spin.setValue(look.iris_stops)
         self.advanced_edit.setPlainText(look.advanced)
         self._set_stale(True)
         self._sync_schematic()
@@ -1331,9 +1403,10 @@ class MainWindow(QMainWindow):
         info = self._info
         if info is None:
             return
-        plan = backend.preview_plan(info, self._position_s(), self.length_spin.value())
+        standard = self.look().standard
+        plan = backend.preview_plan(info, self._position_s(), self.length_spin.value(), standard=standard)
         args = backend.decode_args(
-            self._ffmpeg, info.path, plan.size, start=frame_time(plan.start_frame), frames=1
+            self._ffmpeg, info.path, plan.size, start=frame_time(plan.start_frame, standard), frames=1, standard=standard
         )
         try:
             job = backend.Job(args, capture_stdout=True).start()
@@ -1414,13 +1487,15 @@ class MainWindow(QMainWindow):
                 return
             self.preview.set_image(_image_from(frames, self._frame_index))
         self._sync_frame_slider()
-        self.frame_label.setText(f"{_clock(frame_time(self._frame_index))} / {_clock(frame_time(count))}")
+        standard = self._frames_standard
+        self.frame_label.setText(f"{_clock(frame_time(self._frame_index, standard))} / {_clock(frame_time(count, standard))}")
 
     def _set_playing(self, playing: bool) -> None:
         playing = playing and self._frame_count() > 1
         self._playing = playing
         self.play_button.setText("Pause" if playing else "Play")
         if playing:
+            self._play_timer.setInterval(round(MS_PER_SECOND / fps_of(self._frames_standard)))
             self._play_timer.start()
         else:
             self._play_timer.stop()
@@ -1507,7 +1582,7 @@ class MainWindow(QMainWindow):
         if info is None or self.busy or self._advanced_error is not None:
             return
         look = self.look()
-        plan = backend.preview_plan(info, self._position_s(), self.length_spin.value())
+        plan = backend.preview_plan(info, self._position_s(), self.length_spin.value(), standard=look.standard)
         preview_path = self._workdir / PREVIEW_FILE
         self._task = TASK_PREVIEW
         self._plan = plan
@@ -1530,12 +1605,22 @@ class MainWindow(QMainWindow):
             self._render_job = backend.Job(backend.run_args(self._binary, request, config)).start()
             self._orig_job = backend.Job(
                 backend.decode_args(
-                    self._ffmpeg, info.path, plan.size, start=frame_time(plan.start_frame), frames=plan.frames
+                    self._ffmpeg,
+                    info.path,
+                    plan.size,
+                    start=frame_time(plan.start_frame, look.standard),
+                    frames=plan.frames,
+                    standard=look.standard,
                 ),
                 capture_stdout=True,
             ).start()
         except (GuiError, OSError) as err:
             self._end_task(str(err))
+
+    def _preview_standard(self) -> str:
+        """The standard of the preview being rendered: the look may be edited while it runs."""
+        previewed = self._preview_look
+        return previewed.standard if previewed is not None else DEFAULT_STANDARD
 
     def _poll_preview(self) -> None:
         plan = self._plan
@@ -1560,7 +1645,10 @@ class MainWindow(QMainWindow):
                 return
             self._set_status("Decoding the preview...")
             self._decode_job = backend.Job(
-                backend.decode_args(self._ffmpeg, self._workdir / PREVIEW_FILE, plan.size), capture_stdout=True
+                backend.decode_args(
+                    self._ffmpeg, self._workdir / PREVIEW_FILE, plan.size, standard=self._preview_standard()
+                ),
+                capture_stdout=True,
             ).start()
             return
         decoded = self._decode_job.poll()
@@ -1584,6 +1672,7 @@ class MainWindow(QMainWindow):
         self._clear_task()
         self.original_frames = original
         self.processed_frames = processed
+        self._frames_standard = previewed.standard if previewed is not None else DEFAULT_STANDARD
         self._frame_index = 0
         self._set_stale(previewed != self.look())
         self.progress_bar.setValue(PROGRESS_FULL)
@@ -1643,7 +1732,7 @@ class MainWindow(QMainWindow):
         duration = length if length > 0 else None
         partial = backend.partial_path(out)
         available = info.duration - start
-        self._render_expected = round(FPS * min(duration if duration is not None else available, available))
+        self._render_expected = round(fps_of(look.standard) * min(duration if duration is not None else available, available))
         self._task = TASK_RENDER
         self._partial = partial
         self._render_out = out
