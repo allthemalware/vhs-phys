@@ -7,9 +7,9 @@
 //! `tape`, `mech`, `tracking`, `head` (both heads), `head0`, `head1`, and the
 //! top-level `seed`.
 
-use crate::camera::{CameraParams, TubeKind};
-use crate::condition::Condition;
-use crate::pipeline::Params;
+use super::camera::{CameraParams, TubeKind};
+use super::condition::Condition;
+use super::pipeline::Params;
 
 fn merge(base: &mut toml::Value, over: toml::Value) {
     match (base, over) {
@@ -78,7 +78,6 @@ pub fn apply_overrides(p: &Params, text: &str) -> Result<Params, String> {
         out.seed = s;
     }
     out.interference.seed = out.seed;
-    out.sync_standard();
     Ok(out)
 }
 

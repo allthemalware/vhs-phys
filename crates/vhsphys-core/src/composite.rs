@@ -14,9 +14,9 @@
 //! recovers `cu = 2 LPF(C sin(phi))`, `cv = 2 LPF(C cos(phi))`. The TV's lock is taken as
 //! perfect: the subcarrier used for demodulation is the one used for modulation.
 
-use crate::consts::*;
+use super::consts::*;
 use crate::dsp::{fir_centred, kaiser_lowpass};
-use crate::video::Baseband;
+use super::video::Baseband;
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
 

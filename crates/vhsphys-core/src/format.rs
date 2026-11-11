@@ -9,67 +9,11 @@
 //! The track pitch is the lateral distance the head path advances between two fields,
 //! `advance * sin(angle)`: 58 / 28.9 / 19.3 um, the figures of the format.
 
-use crate::consts::*;
+use super::consts::*;
 use serde::{Deserialize, Serialize};
 
 /// Angle of the head path over a stationary tape (SMPTE ST 32), degrees.
 pub const STATIONARY_ANGLE_DEG: f64 = 5.0 + 56.0 / 60.0 + 7.4 / 3600.0;
-
-/// Television colour and VHS RF standard (`ntsc` or `pal`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TvStandard {
-    #[default]
-    Ntsc,
-    Pal,
-}
-
-impl TvStandard {
-    /// FM luma carrier frequency at sync tip (-40 IRE), Hz: 3.4 MHz (NTSC) or 3.8 MHz (PAL).
-    #[inline]
-    pub fn f_sync_tip(self) -> f64 {
-        match self {
-            TvStandard::Ntsc => F_SYNC_TIP,
-            TvStandard::Pal => F_SYNC_TIP_PAL,
-        }
-    }
-
-    /// Mid-band nominal FM carrier frequency used for head front-end reference, Hz.
-    #[inline]
-    pub fn nominal_carrier_hz(self) -> f64 {
-        match self {
-            TvStandard::Ntsc => 3.9e6,
-            TvStandard::Pal => 4.3e6,
-        }
-    }
-
-    /// Black setup pedestal in IRE (7.5 IRE in NTSC-M, 0 IRE in PAL).
-    #[inline]
-    pub fn setup_ire(self) -> f32 {
-        match self {
-            TvStandard::Ntsc => SETUP_IRE,
-            TvStandard::Pal => SETUP_IRE_PAL,
-        }
-    }
-
-    /// Active black-to-white luminance span in IRE (92.5 IRE in NTSC-M, 100 IRE in PAL).
-    #[inline]
-    pub fn video_span_ire(self) -> f32 {
-        match self {
-            TvStandard::Ntsc => VIDEO_SPAN_IRE,
-            TvStandard::Pal => VIDEO_SPAN_IRE_PAL,
-        }
-    }
-
-    /// Colour-under carrier cycles per horizontal line (40.0 in NTSC, 40.125 in PAL).
-    #[inline]
-    pub fn cu_cycles_per_line(self) -> f64 {
-        match self {
-            TvStandard::Ntsc => 40.0,
-            TvStandard::Pal => PAL_CU_CYCLES_PER_LINE,
-        }
-    }
-}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -126,14 +70,6 @@ impl TapeSpeed {
         TRACK_PITCH_UM
             * (self.advance_um() / TapeSpeed::Sp.advance_um())
             * (self.track_angle_deg().to_radians().sin() / TRACK_ANGLE_DEG.to_radians().sin())
-    }
-
-    /// Track pitch for a given television standard (58 um SP in NTSC, 49 um SP in PAL).
-    pub fn track_pitch_um_for(self, std: TvStandard) -> f64 {
-        match std {
-            TvStandard::Ntsc => self.track_pitch_um(),
-            TvStandard::Pal => TRACK_PITCH_UM_PAL * self.ratio(),
-        }
     }
 
     /// Along-track offset of adjacent tracks in RF samples. The tape advance per field is
@@ -204,9 +140,17 @@ pub const SUB_EMPHASIS_EP_TOL_DB: [[f64; 6]; 4] = [
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::TvStandard;
+
+    /// These tests pin the figures of the 525-line format; the other engine runs the same
+    /// file against its own constants, so they return early there.
+    const NTSC: bool = matches!(STANDARD, TvStandard::Ntsc);
 
     #[test]
     fn sp_is_the_formats_own_figures() {
+        if !NTSC {
+            return;
+        }
         assert_eq!(TapeSpeed::Sp.track_pitch_um(), TRACK_PITCH_UM);
         assert_eq!(TapeSpeed::Sp.track_angle_deg(), TRACK_ANGLE_DEG);
         assert_eq!(TapeSpeed::Sp.adjacent_track_offset_rf(), 4095.0);
@@ -215,6 +159,9 @@ mod tests {
 
     #[test]
     fn slower_tapes_have_narrower_tracks() {
+        if !NTSC {
+            return;
+        }
         let (lp, ep) = (TapeSpeed::Lp.track_pitch_um(), TapeSpeed::Ep.track_pitch_um());
         assert!((lp - 28.9).abs() < 0.3, "{lp}");
         assert!((ep - 19.3).abs() < 0.3, "{ep}");
@@ -225,6 +172,9 @@ mod tests {
 
     #[test]
     fn pitch_is_advance_times_sine_of_the_angle() {
+        if !NTSC {
+            return;
+        }
         for s in TapeSpeed::ALL {
             let p = s.advance_um() * s.track_angle_deg().to_radians().sin();
             assert!((p - s.track_pitch_um()).abs() < 0.3, "{s:?}: {p} vs {}", s.track_pitch_um());

@@ -9,10 +9,9 @@
 //! values only.
 
 use serde::{Deserialize, Serialize};
-use crate::consts::*;
+use super::consts::*;
 use crate::dsp::*;
-use crate::emphasis::SubDeemphasis;
-use crate::format::TvStandard;
+use super::emphasis::SubDeemphasis;
 
 /// Nominal discriminator delay assumed by the downstream scaling (samples).
 pub const DEMOD_DELAY_NOMINAL: f64 = 3.0;
@@ -57,7 +56,7 @@ pub struct DeckParams {
     /// Scale factors on the de-emphasis network's time constant and ratio.
     pub deemph_tau_scale: f64,
     /// The sub-deemphasis of the LP and EP modes, after the main de-emphasis; none at SP.
-    pub sub_deemphasis: Option<crate::emphasis::SubEmphasisParams>,
+    pub sub_deemphasis: Option<super::emphasis::SubEmphasisParams>,
     pub deemph_ratio_scale: f64,
     /// Aperture corrector ("sharpness"): centre, Q, gain dB.
     pub sharp_freq: f64,
@@ -73,8 +72,6 @@ pub struct DeckParams {
     pub coupling_hpf_hz: f64,
     /// DC offset error of the discriminator (IRE), e.g. a detuned tank.
     pub dc_error_ire: f64,
-    /// Television standard (`ntsc` or `pal`): selects 3.4 MHz vs 3.8 MHz sync-tip carrier.
-    pub standard: TvStandard,
 }
 
 /// Power-supply related disturbances reaching the video path.
@@ -125,7 +122,6 @@ impl Default for DeckParams {
             supply: SupplyParams::default(),
             coupling_hpf_hz: 15.0,
             dc_error_ire: 0.0,
-            standard: TvStandard::Ntsc,
         }
     }
 }
@@ -247,10 +243,9 @@ pub fn process_segment(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
     let mut fmx = x.clone();
     butter_hp(4, p.fm_hpf_hz, FS_RF).process(&mut fmx);
     let mut prod = discriminate(&fmx, p.limiter_threshold as f32, p.demod_delay);
-    let f_sync_tip = p.standard.f_sync_tip();
     let mut lpf = butter_lp(p.demod_lpf_order, p.demod_lpf_hz, FS_RF);
     // the discriminator idles at the sync-tip... settle on the 0 IRE level
-    lpf.settle(r_of_freq(f_sync_tip + 40.0 * HZ_PER_IRE) as f64);
+    lpf.settle(r_of_freq(F_SYNC_TIP - SYNC_IRE as f64 * HZ_PER_IRE) as f64);
     lpf.process(&mut prod);
 
     // product -> frequency -> IRE using the *nominal* design delay
@@ -258,7 +253,7 @@ pub fn process_segment(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
     let mut y = vec![0.0f32; n];
     for i in 0..n {
         let f = (1.0 - prod[i] as f64) / (4.0 * tau);
-        y[i] = ((f - f_sync_tip) / HZ_PER_IRE - 40.0) as f32;
+        y[i] = ((f - F_SYNC_TIP) / HZ_PER_IRE + SYNC_IRE as f64) as f32;
     }
 
     // ---- de-emphasis (inverse of the record emphasis, with component drift), sub-deemphasis ----
@@ -402,12 +397,20 @@ fn r_of_freq(f: f64) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::TvStandard;
     use std::f64::consts::PI;
+
+    /// These tests pin the figures of the 525-line format; the other engine runs the same
+    /// file against its own constants, so they return early there.
+    const NTSC: bool = matches!(STANDARD, TvStandard::Ntsc);
 
     /// A pure FM carrier at a known frequency must demodulate to the matching
     /// IRE level through limiter + delay-line discriminator.
     #[test]
     fn discriminator_maps_frequency_to_ire() {
+        if !NTSC {
+            return;
+        }
         for ire in [-40.0, 0.0, 50.0, 100.0] {
             let f = F_SYNC_TIP + (ire + 40.0) * HZ_PER_IRE;
             let n = 20_000;
@@ -446,6 +449,9 @@ mod tests {
     /// the previous line (so the output stays near the true level).
     #[test]
     fn dropout_compensator_repairs_a_dropout() {
+        if !NTSC {
+            return;
+        }
         let f = 3.9e6;
         let n = 6 * RF_PER_LINE;
         let mut rf: Vec<f32> = (0..n).map(|i| (0.5 * (2.0 * PI * f * i as f64 / FS_RF).sin()) as f32).collect();

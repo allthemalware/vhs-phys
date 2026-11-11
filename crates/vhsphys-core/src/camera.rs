@@ -26,8 +26,8 @@
 //!    shifts hue along its tail (e.g. warm amber/red on Plumbicon or emerald/amber on NewVicon)
 //!    before being FM-modulated onto the VHS tape.
 
-use crate::consts::{ACTIVE_H, ACTIVE_W};
-use crate::video::Frame;
+use super::consts::{ACTIVE_H, ACTIVE_W};
+use super::video::Frame;
 use serde::{Deserialize, Serialize};
 
 /// Pickup tube target chemistry.

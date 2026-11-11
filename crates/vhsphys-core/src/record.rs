@@ -11,11 +11,10 @@
 //! its bias, exactly as in the VHS standard.
 
 use serde::{Deserialize, Serialize};
-use crate::consts::*;
+use super::consts::*;
 use crate::dsp::*;
-use crate::emphasis::SubPreemphasis;
-use crate::format::TvStandard;
-use crate::video::Baseband;
+use super::emphasis::SubPreemphasis;
+use super::video::Baseband;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
 
@@ -49,7 +48,7 @@ pub struct RecordParams {
     pub chroma_level: f64,
     pub burst_boost: f32,
     /// The sub-preemphasis of the LP and EP modes, before the main emphasis; none at SP.
-    pub sub_emphasis: Option<crate::emphasis::SubEmphasisParams>,
+    pub sub_emphasis: Option<super::emphasis::SubEmphasisParams>,
     /// How far the channel-1 head's carrier sits above the channel-2 head's, Hz (fH/2 at LP and EP).
     pub carrier_interleave_hz: f64,
     /// Head current threshold (relative to FM amplitude 1) = tape coercivity.
@@ -57,9 +56,6 @@ pub struct RecordParams {
     /// Asymmetry of the FM drive (DC offset of the record current): a failing
     /// modulator gives an asymmetrical, distorted FM carrier.
     pub drive_offset: f64,
-    /// Television standard (`ntsc` or `pal`): selects 3.4..4.4 MHz vs 3.8..4.8 MHz FM carrier
-    /// and NTSC vs PAL colour-under phase rotation.
-    pub standard: TvStandard,
 }
 
 impl Default for RecordParams {
@@ -80,54 +76,26 @@ impl Default for RecordParams {
             carrier_interleave_hz: 0.0,
             relay_threshold: 0.30,
             drive_offset: 0.0,
-            standard: TvStandard::Ntsc,
         }
     }
 }
 
-/// cos/sin of the colour-under carrier phase across one line (40 cycles).
+/// cos/sin of the colour-under carrier phase across one line (`CU_CYCLES_PER_LINE` cycles).
 fn carrier_table() -> &'static (Vec<f32>, Vec<f32>) {
     static T: OnceLock<(Vec<f32>, Vec<f32>)> = OnceLock::new();
     T.get_or_init(|| {
-        let c = (0..RF_PER_LINE).map(|r| (2.0 * PI * 40.0 * r as f64 / RF_PER_LINE as f64).cos() as f32).collect();
-        let s = (0..RF_PER_LINE).map(|r| (2.0 * PI * 40.0 * r as f64 / RF_PER_LINE as f64).sin() as f32).collect();
+        let c = (0..RF_PER_LINE).map(|r| (2.0 * PI * CU_CYCLES_PER_LINE * r as f64 / RF_PER_LINE as f64).cos() as f32).collect();
+        let s = (0..RF_PER_LINE).map(|r| (2.0 * PI * CU_CYCLES_PER_LINE * r as f64 / RF_PER_LINE as f64).sin() as f32).collect();
         (c, s)
     })
 }
 
-/// Phase rotation applied to the colour-under carrier on a line:
-/// track parity 0 advances +90 deg per line, parity 1 retards 90 deg.
+/// Phase rotation applied to the colour-under carrier on a line: `CU_ROTATION_QUARTERS[parity]`
+/// quarter turns per line (525 lines: parity 0 advances +90 deg per line, parity 1 retards 90 deg).
 /// Returns the unit vector (cos, sin) of the rotation.
 pub fn line_rotation(parity: usize, line: i64) -> (f32, f32) {
-    let m = line.rem_euclid(4) as usize;
-    let m = if parity == 0 { m } else { (4 - m) % 4 };
+    let m = (CU_ROTATION_QUARTERS[parity] * line).rem_euclid(4) as usize;
     [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)][m]
-}
-
-/// Standard-aware colour-under phase rotation per line.
-/// In NTSC, track 0 rotates +90 deg/line and track 1 rotates -90 deg/line.
-/// In PAL (40.125 fH offset + track 1 90-deg shift), track 0 advances +45 deg/line
-/// and track 1 advances +135 deg/line.
-pub fn line_rotation_std(std: TvStandard, parity: usize, line: i64) -> (f32, f32) {
-    match std {
-        TvStandard::Ntsc => line_rotation(parity, line),
-        TvStandard::Pal => {
-            const S: f32 = std::f32::consts::FRAC_1_SQRT_2;
-            const STEPS: [(f32, f32); 8] = [
-                (1.0, 0.0),
-                (S, S),
-                (0.0, 1.0),
-                (-S, S),
-                (-1.0, 0.0),
-                (-S, -S),
-                (0.0, -1.0),
-                (S, -S),
-            ];
-            let step = if parity == 0 { 1 } else { 3 };
-            let m = (line.rem_euclid(8) as usize * step) % 8;
-            STEPS[m]
-        }
-    }
 }
 
 /// Source of baseband video: concatenated frames addressed by baseband sample
@@ -174,9 +142,9 @@ pub fn fm_modulate(y_rf: &[f32], p: &RecordParams, offset_hz: f64, out: &mut Vec
     out.reserve(y_rf.len());
     let mut phase = 0.0f64;
     let k = 2.0 * PI / FS_RF;
-    let f0 = (p.standard.f_sync_tip() + offset_hz) * (1.0 + p.fm_freq_error);
+    let f0 = (F_SYNC_TIP + offset_hz) * (1.0 + p.fm_freq_error);
     for &y in y_rf {
-        let f = f0 + (y as f64 + 40.0) * HZ_PER_IRE * p.fm_deviation_scale;
+        let f = f0 + (y as f64 - SYNC_IRE as f64) * HZ_PER_IRE * p.fm_deviation_scale;
         phase += k * f;
         if phase > PI {
             phase -= 2.0 * PI;
@@ -257,7 +225,7 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
         let gi = g0 + n as i64;
         let line = gi.div_euclid(RF_PER_LINE as i64);
         let r = gi.rem_euclid(RF_PER_LINE as i64) as usize;
-        let (rc, rs) = line_rotation_std(p.standard, parity, line);
+        let (rc, rs) = line_rotation(parity, line);
         // carrier phasor e^{j(theta + rho)}
         let (cr, ci) = (tc[r] * rc - ts[r] * rs, tc[r] * rs + ts[r] * rc);
         let u = a * (cu_rf[off + n] * cr - cv_rf[off + n] * ci);
@@ -283,6 +251,11 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::TvStandard;
+
+    /// These tests pin the figures of the 525-line format; the other engine runs the same
+    /// file against its own constants, so they return early there.
+    const NTSC: bool = matches!(STANDARD, TvStandard::Ntsc);
 
     /// Constant-luma source (sync-free) for carrier-frequency checks.
     struct Flat(f32);
@@ -302,6 +275,9 @@ mod tests {
 
     #[test]
     fn carrier_frequency_follows_luma_level() {
+        if !NTSC {
+            return;
+        }
         let p = RecordParams { luma_lpf_hz: 20e6, emph_ratio: 1.0, ..Default::default() };
         for (ire, want) in [(-40.0f32, 3.4e6), (0.0, 3.4e6 + 40.0 * HZ_PER_IRE), (100.0, 4.4e6)] {
             // emphasis ratio 1 (flat): the clip must not engage for these levels
@@ -326,6 +302,9 @@ mod tests {
 
     #[test]
     fn clip_bounds_carrier_frequency() {
+        if !NTSC {
+            return;
+        }
         // a huge luma step is clipped to the 3.0 .. 5.0 MHz deviation limits
         let p = RecordParams { luma_lpf_hz: 20e6, emph_ratio: 1.0, ..Default::default() };
         let hi = mean_freq(&record_track(&Flat(500.0), &p, 0, 0, 30_000));
@@ -336,6 +315,9 @@ mod tests {
 
     #[test]
     fn rotation_alternates_by_head() {
+        if !NTSC {
+            return;
+        }
         assert_eq!(line_rotation(0, 1), (0.0, 1.0));
         assert_eq!(line_rotation(1, 1), (0.0, -1.0));
         assert_eq!(line_rotation(0, 4), (1.0, 0.0));

@@ -3,7 +3,9 @@
 ## Timing grid
 
 Everything lives on a line-locked grid so that line, field and carrier phases
-are exact integers.
+are exact integers. The figures below are those of the 525-line engine; the 625-line
+engine uses the same 2730 and 910 samples per line at its own line rate (see
+"Two engines, one source").
 
 | Domain | Rate | Samples per line | Used for |
 |---|---|---|---|
@@ -16,14 +18,45 @@ field's vertical sync (`consts::switch_time`). Global sample indices (i64) are
 the time axis for everything, so any process that is a function of global time
 (timebase error, tape position) is reproducible and order independent.
 
+## Two engines, one source
+
+The raster (525 or 625 lines, the levels, the vertical interval, the colour-under carrier,
+the track geometry) is a set of compile-time constants, so the model is written once and
+compiled twice instead of carrying the standard around at run time. `consts.rs` holds the 525-line
+set and `consts_pal.rs` the 625-line one; they define the same names with the same types.
+`ntsc.rs` and `pal.rs` each declare every engine module from the same source files
+(`engine!` in `lib.rs`, `#[path]` per module) against their own constants, giving
+`vhsphys_core::ntsc::{consts, video, record, pipeline, ...}` and `vhsphys_core::pal::{...}`.
+The crate root re-exports the `ntsc` engine, so `vhsphys_core::pipeline::Session` is the 525-line
+`Session` and every existing path is unchanged. The 625-line engine costs nothing at run time: the
+525-line path does not know it exists.
+
+Inside an engine file, another engine module is `super::x` (so each engine sees its own
+constants); a shared module is `crate::x`.
+
+Shared, compiled once and common to both engines (nothing in them depends on the raster):
+
+* `standard`: the television standards (`TvStandard`) and the PAL delay-line decoding rules
+* `tube`: the camera pickup tube model
+* `frame`: the RGB `Frame` (`video` re-exports it), so a frame made by one engine is a frame of the other
+* `dsp`: filters and resamplers
+* `rng`: the seeded random numbers
+* `interference_params`: the outside world as parameters
+
+Everything else in the table below is an engine module and exists once per engine. Unit tests
+inside engine files that assert 525-line figures return early in the other engine.
+
 ## Modules (`crates/vhsphys-core/src`)
 
 | Module | Responsibility |
 |---|---|
-| `consts` | timing and format constants with their sources |
+| `consts` | timing and format constants with their sources (`consts_pal` for the 625-line engine) |
+| `frame` | the RGB frame, shared by both engines |
+| `standard` | television standards and PAL delay-line decoding (shared) |
+| `tube` | camera pickup tube model (shared) |
 | `dsp` | biquads, Butterworth, first-order emphasis sections, Kaiser FIR, cubic resampling |
 | `rng` | seeded, order-independent random numbers (hash of seed/stream/index) |
-| `video` | NTSC raster including vsync structure; RGB <-> YUV; encode/decode helpers |
+| `video` | the raster of the engine's standard including vsync structure; RGB <-> YUV; encode/decode helpers |
 | `record` | record deck chain and the saturating tape relay; produces `Transition`s |
 | `emphasis` | the LP/EP sub-preemphasis (a level-dependent high-frequency boost, table 4 of ST 32) and its exact inverse on playback |
 | `tape` | defect map in tape coordinates, spacing roughness, creases, edge profile |
@@ -144,7 +177,8 @@ To preview an excerpt, the backend runs the CLI with `--start` beginning a few f
   the physical effect enters (usually a `Controls` array in `render_rf`, or a
   stage in `electronics::process_segment`), and map a `Condition` field to them
   in `condition.rs`. Serde derives expose them to TOML automatically.
-* PAL: constants in `consts`, a per-line V-switch in `video`/`record`/`decode`,
-  colour-under 626.953 kHz, FM 3.8-4.8 MHz, 625-line vsync pattern.
+* PAL: the constants are in `consts_pal.rs` and the vertical interval is built from them; the
+  per-line V-switch in `video`/`record`/`decode` and the colour-under 626.953 kHz carrier
+  (`CU_CYCLES_PER_LINE`) are still to come in the `pal` engine.
 * S-VHS: FM 5.4-7.0 MHz, 1.6 MHz deviation, extra sub-emphasis, a higher RF
   sample rate.

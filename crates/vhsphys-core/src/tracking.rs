@@ -7,9 +7,9 @@
 //! crosstalk that the +/-90 degree rotation normally cancels.
 
 use serde::{Deserialize, Serialize};
-use crate::consts::*;
-use crate::format::TapeSpeed;
-use crate::head::STRIDE;
+use super::consts::*;
+use super::format::TapeSpeed;
+use super::head::STRIDE;
 use crate::rng::Rng;
 
 const STREAM_TRACKING: u64 = 41;
@@ -65,9 +65,17 @@ pub fn lateral_weights(p: &TrackingParams, speed: TapeSpeed, head_width_um: f64,
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::TvStandard;
+
+    /// These tests pin the figures of the 525-line format; the other engine runs the same
+    /// file against its own constants, so they return early there.
+    const NTSC: bool = matches!(STANDARD, TvStandard::Ntsc);
 
     #[test]
     fn perfect_tracking_reads_only_the_own_track() {
+        if !NTSC {
+            return;
+        }
         let w = lateral_weights(&TrackingParams::default(), TapeSpeed::Sp, 58.0, 1, 4, FIELD_RF, 0);
         assert!(w[2].iter().all(|v| (*v - 1.0).abs() < 1e-6));
         assert!(w[1].iter().chain(w[3].iter()).all(|v| *v == 0.0));
@@ -75,6 +83,9 @@ mod tests {
 
     #[test]
     fn half_pitch_offset_splits_the_head_between_two_tracks() {
+        if !NTSC {
+            return;
+        }
         let p = TrackingParams { offset_um: 29.0, ..Default::default() };
         let w = lateral_weights(&p, TapeSpeed::Sp, 58.0, 1, 4, FIELD_RF, 0);
         assert!((w[2][100] - 0.5).abs() < 1e-5 && (w[3][100] - 0.5).abs() < 1e-5);
@@ -87,6 +98,9 @@ mod tests {
 
     #[test]
     fn slope_sweeps_the_noise_band_across_the_picture() {
+        if !NTSC {
+            return;
+        }
         // a 58 um ramp over the track: starts on track n, ends on track n+1
         // offset 29 um with a 58 um slope: head centre goes from 0 to +58 um (track n -> n+1)
         let p = TrackingParams { offset_um: 29.0, slope_um: 58.0, ..Default::default() };

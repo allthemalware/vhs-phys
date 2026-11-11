@@ -21,9 +21,9 @@
 //!   the head width they cover.
 
 use serde::{Deserialize, Serialize};
-use crate::consts::*;
-use crate::format::TapeSpeed;
-use crate::head::{Controls, STRIDE};
+use super::consts::*;
+use super::format::TapeSpeed;
+use super::head::{Controls, STRIDE};
 use crate::rng::Rng;
 
 const STREAM_TAPE: u64 = 31;

@@ -13,15 +13,14 @@
 //!   separator (`composite`) before it is converted to RGB.
 
 use serde::{Deserialize, Serialize};
-use crate::composite::{self, CompositeParams};
-use crate::consts::*;
-use crate::crt;
+use super::composite::{self, CompositeParams};
+use super::consts::*;
+use super::crt;
 use crate::dsp::*;
-use crate::format::TvStandard;
-use crate::interference::video_line_terms;
+use super::interference::video_line_terms;
 use crate::interference_params::InterferenceParams;
-use crate::record::line_rotation_std;
-use crate::video::{decode_ideal_with_standard, pal_v_sign, Baseband, Frame};
+use super::record::line_rotation;
+use super::video::{decode_ideal, Baseband, Frame};
 use std::f64::consts::PI;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,9 +45,6 @@ pub struct DecodeParams {
     /// How much the chroma path lags the luma path, baseband samples
     /// (measured at alignment; the deck's luma delay line cancels it).
     pub chroma_delay: f64,
-    /// Television standard (`ntsc` or `pal`): selects NTSC 180-deg burst vs PAL swinging
-    /// burst (+/-135 deg), per-line V-switch alternation, and PAL delay-line comb.
-    pub standard: TvStandard,
 }
 
 impl Default for DecodeParams {
@@ -65,7 +61,6 @@ impl Default for DecodeParams {
             burst_nominal: 1.0,
             burst_boost: 2.0,
             chroma_delay: 0.0,
-            standard: TvStandard::Ntsc,
         }
     }
 }
@@ -92,8 +87,8 @@ pub fn head_parity_at(n: i64) -> usize {
 /// Sub-sample position of the sync leading edge near `n0`.
 ///
 /// Like a TV's sync separator this is *tip referenced*: the slice level sits
-/// half a nominal sync amplitude (20 IRE) above the sync tip, and a candidate is
-/// only accepted if its tip really is at sync-tip level (about -40 IRE, allowing
+/// half a nominal sync amplitude (20 IRE at 525 lines) above the sync tip, and a candidate is
+/// only accepted if its tip really is at sync-tip level (about `SYNC_IRE`, allowing
 /// +/-25 IRE of DC error and hum) and stays there for the sync width. That
 /// rejects the steep fall from a bright picture into the front porch, which is
 /// larger than the sync pulse itself. Candidate edges are tried strongest first.
@@ -117,7 +112,7 @@ pub fn find_sync(luma: &[f32], bb0: i64, n0: f64, search: i64) -> Option<f64> {
         if !(-65.0..=-15.0).contains(&tip) {
             continue;
         }
-        let mid = tip + 0.5 * 40.0;
+        let mid = tip - 0.5 * SYNC_IRE;
         if luma[i - 6] < mid + 5.0 {
             continue;
         }
@@ -151,8 +146,8 @@ pub(crate) fn demod_chroma(view: &StreamView, start: i64, len: usize, p: &Decode
         }
         let line = n.div_euclid(BB_PER_LINE as i64);
         let col = n.rem_euclid(BB_PER_LINE as i64) as f64;
-        let th = 2.0 * PI * 40.0 * col / BB_PER_LINE as f64;
-        let (rc, rs) = line_rotation_std(p.standard, head_parity_at(n), line);
+        let th = 2.0 * PI * CU_CYCLES_PER_LINE * col / BB_PER_LINE as f64;
+        let (rc, rs) = line_rotation(head_parity_at(n), line);
         let (c, s) = (th.cos() as f32, th.sin() as f32);
         // carrier phasor e^{j(th+rho)}
         let (pc, ps) = (c * rc - s * rs, c * rs + s * rc);
@@ -175,7 +170,7 @@ pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams, composite: &Com
     if composite.enabled {
         composite::roundtrip(&mut bb, k, composite);
     }
-    let mut frame = decode_ideal_with_standard(&bb, p.standard);
+    let mut frame = decode_ideal(&bb);
     // nothing acts on the tube without a magnet or a stray field
     if itf.crt_on() {
         crt::apply(&mut frame, k, itf);
@@ -198,7 +193,7 @@ fn outside_luma(y: f32, gain: f32, add: f32) -> f32 {
 pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &InterferenceParams) -> Baseband {
     let outside = itf.video_on();
     let frame0 = k * FRAME_BB as i64;
-    let (cs, ce) = (frame0 + 20 * BB_PER_LINE as i64, frame0 + 525 * BB_PER_LINE as i64);
+    let (cs, ce) = (frame0 + 20 * BB_PER_LINE as i64, frame0 + LINES as i64 * BB_PER_LINE as i64);
     assert!(view.bb0 <= cs - 2000 && view.end() >= ce, "stream view does not cover frame {k}");
     let cstart = cs - 600;
     let clen = (ce - cs) as usize + 1200;
@@ -243,16 +238,7 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
             }
             let (br, bi) = (br / 20.0, bi / 20.0);
             let bmag = (br * br + bi * bi).sqrt();
-            let frame_line = FIELD_FIRST_LINE[field] + j;
-            let v_sign = match p.standard {
-                TvStandard::Ntsc => 1.0,
-                TvStandard::Pal => pal_v_sign(frame_line),
-            };
-            let burst_ref_angle = match p.standard {
-                TvStandard::Ntsc => PI,
-                TvStandard::Pal => PI - (v_sign as f64) * (PI / 4.0),
-            };
-            let phi = bi.atan2(br) - burst_ref_angle;
+            let phi = bi.atan2(br) - PI;
             let wrap = |a: f64| (a + PI).rem_euclid(2.0 * PI) - PI;
             if j == 0 {
                 phi_s = wrap(phi);
@@ -287,8 +273,8 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
                     cl.push([0.0, 0.0]);
                 } else {
                     let (r, i) = (cat(pos + p.chroma_delay, &cre) as f64, cat(pos + p.chroma_delay, &cim) as f64);
-                    // rotate by -phi, scale to the burst reference amplitude, and un-switch V in PAL
-                    let (rr, ii) = (r * cr - i * sr, (r * sr + i * cr) * (v_sign as f64));
+                    // rotate by -phi, scale to the burst reference amplitude
+                    let (rr, ii) = (r * cr - i * sr, r * sr + i * cr);
                     cl.push([(rr * scale) as f32, (ii * scale) as f32]);
                 }
             }

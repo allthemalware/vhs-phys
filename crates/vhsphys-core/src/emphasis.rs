@@ -31,7 +31,7 @@
 //! inverse is exact in closed form and costs one square root a sample, where an iterative
 //! solve inside the recursion would cost several times the rest of the playback chain.
 
-use crate::format::TapeSpeed;
+use super::format::TapeSpeed;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 

@@ -13,13 +13,13 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 use vhsphys_core::condition::Condition;
 use vhsphys_core::config;
-use vhsphys_core::consts::{ACTIVE_H, ACTIVE_W};
+use vhsphys_core::consts::{ACTIVE_H, ACTIVE_W, MAINS_HZ_DEFAULT};
 use vhsphys_core::interference_params::{MagnetKind, PhoneMode, RadioMod};
 use vhsphys_core::pipeline::Chain;
 use vhsphys_core::video::{decode_ideal, encode_frame, Frame};
 
 /// Mains frequency the preset listing takes for granted; another one is worth a word.
-const NOMINAL_MAINS_HZ: f64 = 60.0;
+const NOMINAL_MAINS_HZ: f64 = MAINS_HZ_DEFAULT;
 
 /// A number as a person would write it: 6, 59.4, 0.9 (no trailing zeros).
 fn plain(x: f64) -> String {
@@ -127,15 +127,6 @@ enum AudioMode {
     None,
 }
 
-/// Television colour and VHS RF standard.
-#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-enum StandardArg {
-    /// NTSC-M (3.4..4.4 MHz FM luma, 629 kHz 90-deg colour-under).
-    Ntsc,
-    /// PAL (3.8..4.8 MHz FM luma, 627 kHz swinging-burst +/-V colour-under).
-    Pal,
-}
-
 /// Camera pickup tube target chemistry ahead of the VHS recorder.
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum CameraTubeArg {
@@ -173,9 +164,6 @@ struct RunArgs {
     /// Sound: process (through the simulated tape and deck), copy (untouched) or none.
     #[arg(long, value_enum, default_value_t = AudioMode::Process)]
     audio: AudioMode,
-    /// Television and VHS RF standard: ntsc or pal.
-    #[arg(long, value_enum)]
-    standard: Option<StandardArg>,
     /// Camera pickup tube chemistry for highlight comet-tails / lag: plumbicon, saticon, newvicon, vidicon.
     #[arg(long, value_enum)]
     camera_tube: Option<CameraTubeArg>,
@@ -251,13 +239,6 @@ fn run(a: RunArgs) -> Result<()> {
     // other `--set` items apply to every generation as they are.
     let (seed_sets, mut other_sets): (Vec<String>, Vec<String>) =
         a.sets.iter().cloned().partition(|s| s.split_once('=').is_some_and(|(k, _)| k.trim() == "seed"));
-    if let Some(std) = a.standard {
-        let name = match std {
-            StandardArg::Ntsc => "ntsc",
-            StandardArg::Pal => "pal",
-        };
-        other_sets.insert(0, format!("standard={name}"));
-    }
     if let Some(tube) = a.camera_tube {
         let name = match tube {
             CameraTubeArg::Off => "off",

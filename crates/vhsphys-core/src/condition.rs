@@ -8,11 +8,12 @@
 //! estimate rather than a published figure it is marked `[est]`; the numbers
 //! are meant to be tuned against real tapes and decks.
 
-use crate::emphasis::SubEmphasisParams;
-use crate::format::TapeSpeed;
-use crate::interference::hash_unit;
+use super::consts::MAINS_HZ_DEFAULT;
+use super::emphasis::SubEmphasisParams;
+use super::format::TapeSpeed;
+use super::interference::hash_unit;
 use crate::interference_params::{CrtMagnet, CrtParams, HeadMagnet, InterferenceParams, MagnetKind, MainsParams, PhoneMode, PhoneParams, RadioMod, RadioParams};
-use crate::pipeline::Params;
+use super::pipeline::Params;
 use crate::rng::Rng;
 use serde::{Deserialize, Serialize};
 
@@ -116,7 +117,7 @@ impl Default for Condition {
             deck_temp_c: 55.0,
             deck_humidity: 0.3,
             psu_smps: false,
-            mains_hz: 60.0,
+            mains_hz: MAINS_HZ_DEFAULT,
             mains_sag: 0.0,
             tracking_error_um: 0.0,
             tracking_slope_um: 0.0,
