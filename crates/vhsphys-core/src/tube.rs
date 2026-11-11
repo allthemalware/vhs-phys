@@ -99,6 +99,14 @@ pub enum TubeKind {
     PlumbiconAct,
 }
 
+/// Charge scale `Q_T` per channel `[R, G, B]`, nA: fitted, one value per channel, to the decay lag
+/// at 60 and 200 ms of the XQ1020 data (`XQ1020_LAG`) by `lag_measurement` at 0.04 s, least
+/// squares on the logarithm of the two figures. The XQ1410 is the same target and gun, so it
+/// uses these too (its lag is then a prediction, not a fit). See docs/CAMERA.md.
+pub const CHARGE_SCALE_XQ1020_NA: [f64; 3] = [6.32, 5.64, 7.55];
+/// The same fit to the XQ1520 (anti-comet-tail gun) data, `XQ1520_LAG`.
+pub const CHARGE_SCALE_XQ1520_NA: [f64; 3] = [6.12, 5.12, 7.90];
+
 /// One tube of the camera (one colour channel) at its operating point.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TubeChannel {
@@ -122,29 +130,102 @@ impl TubeKind {
     /// current to that multiple of each channel's peak-white current; `active_scan_s` is the
     /// time per frame the beam spends on the picture (it sets `saturation_na`).
     pub fn channels(self, beam_ratio: f64, active_scan_s: f64) -> Option<[TubeChannel; 3]> {
-        let _ = (beam_ratio, active_scan_s);
-        todo!("operating points from the constants above; charge_scale_na fitted per channel")
+        let charge_scale = match self {
+            TubeKind::Off => return None,
+            TubeKind::Plumbicon | TubeKind::PlumbiconBias => CHARGE_SCALE_XQ1020_NA,
+            TubeKind::PlumbiconAct => CHARGE_SCALE_XQ1520_NA,
+        };
+        // C V / t in nA: the charge that takes an element from the cathode to the plate voltage
+        let saturation_na = TARGET_CAPACITANCE_F * TARGET_VOLTAGE_V / active_scan_s * 1e9;
+        Some(std::array::from_fn(|k| TubeChannel {
+            peak_signal_na: PEAK_SIGNAL_NA[k],
+            beam_na: beam_ratio * PEAK_SIGNAL_NA[k],
+            charge_scale_na: charge_scale[k],
+            dark_na: DARK_NA,
+            bias_na: if self == TubeKind::PlumbiconBias { LIGHT_BIAS_XQ1410_NA[k] } else { 0.0 },
+            saturation_na,
+            act: self == TubeKind::PlumbiconAct,
+        }))
     }
 }
 
 /// Photo current for a linear scene light (1.0 = the light that gives peak white), nA.
 pub fn photo_current(ch: &TubeChannel, light: f64) -> f64 {
-    let _ = (ch, light);
-    todo!("peak_signal_na * max(light, 0)^GAMMA")
+    ch.peak_signal_na * light.max(0.0).powf(GAMMA)
 }
 
 /// One frame of one element: add this frame's photo, dark and bias charge (stopping at
 /// `saturation_na`), apply the ACT flyback recharge if fitted (no element above `beam_na`),
 /// then scan as described in the module docs. Returns the signal read, nA.
 pub fn frame_step(ch: &TubeChannel, q: &mut f64, photo_na: f64) -> f64 {
-    let _ = (ch, q, photo_na);
-    todo!()
+    let mut before = (*q + photo_na.max(0.0) + ch.dark_na + ch.bias_na).min(ch.saturation_na);
+    if ch.act {
+        // the flyback beam takes everything above what the read beam can stabilise; that
+        // charge never reaches the signal
+        before = before.min(ch.beam_na);
+    }
+    *q = scan(ch.beam_na, ch.charge_scale_na, before);
+    before - *q
+}
+
+/// The scan of one element holding charge `q`: the charge it holds afterwards.
+fn scan(beam: f64, scale: f64, q: f64) -> f64 {
+    if beam <= 0.0 {
+        return q;
+    }
+    // above the cathode potential the whole beam lands, up to the charge there is
+    let landed = q.clamp(0.0, beam);
+    let q = q - landed;
+    let left = beam - landed;
+    if left <= 0.0 {
+        return q;
+    }
+    // below it, exp(-q'/Q_T) = exp(-q/Q_T) + left/Q_T
+    let x = -q / scale;
+    if x < 700.0 {
+        return -scale * (x.exp() + left / scale).ln();
+    }
+    // an element left far below the cathode potential would overflow the exponential: the
+    // same sum as a log-sum-exp
+    let y = (left / scale).ln();
+    let m = x.max(y);
+    -scale * (m + ((x - m).exp() + (y - m).exp()).ln())
 }
 
 /// Charge of an element after a long time in the dark (the state a camera starts in).
 pub fn dark_equilibrium(ch: &TubeChannel) -> f64 {
-    let _ = ch;
-    todo!()
+    // The fixed point of "add the dark and bias charge, scan". `a` is what a frame adds and,
+    // in equilibrium, what the scan reads back.
+    let a = ch.dark_na + ch.bias_na;
+    let (beam, scale) = (ch.beam_na, ch.charge_scale_na);
+    if a <= 0.0 {
+        // nothing is added, so the beam keeps walking the charge down and there is no
+        // equilibrium: one scan of an empty element is the state to start from
+        return scan(beam, scale, 0.0);
+    }
+    if beam <= a {
+        // the beam cannot hold off the dark current: the element fills up to the plate voltage
+        return scan(beam, scale, ch.saturation_na);
+    }
+    // below the cathode potential before the scan (q_b <= 0): with q_a = q_b - a,
+    // exp(-q_b/Q_T) (exp(a/Q_T) - 1) = beam/Q_T
+    let growth = (a / scale).exp_m1();
+    if beam / scale >= growth {
+        let q_before = -scale * (beam / scale / growth).ln();
+        return q_before - a;
+    }
+    // otherwise the element is above it and the beam lands in full before the rest charges it
+    // below: solve q_b = a - Q_T ln(1 + (beam - q_b)/Q_T) for q_b in (0, a) by bisection
+    let (mut lo, mut hi) = (0.0, a);
+    for _ in 0..200 {
+        let mid = 0.5 * (lo + hi);
+        if mid - a + scale * (1.0 + (beam - mid) / scale).ln() < 0.0 {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi) - a
 }
 
 /// The data sheet's lag measurement on one channel at a frame period `frame_s`: signal and
@@ -155,6 +236,98 @@ pub fn dark_equilibrium(ch: &TubeChannel) -> f64 {
 /// the signal before the change, interpolated log-linearly between scans to 60 and 200 ms;
 /// build-up is the percentage of the final signal, interpolated linearly.
 pub fn lag_measurement(ch: &TubeChannel, frame_s: f64) -> LagFigures {
-    let _ = (ch, frame_s);
-    todo!()
+    let t = TubeChannel { peak_signal_na: LAG_TEST_SIGNAL_NA, beam_na: LAG_TEST_BEAM_NA, ..*ch };
+    let frames = |seconds: f64| (seconds / frame_s).ceil() as usize;
+    // readings are kept for the scans that bracket 200 ms (and 60 ms, which comes first)
+    let kept = frames(0.2) + 2;
+
+    let mut q = dark_equilibrium(&t);
+    let dark = frame_step(&t, &mut q, 0.0);
+
+    // light on for 5 s, then off
+    for _ in 0..frames(5.0) {
+        frame_step(&t, &mut q, LAG_TEST_SIGNAL_NA);
+    }
+    let lit = frame_step(&t, &mut q, LAG_TEST_SIGNAL_NA);
+    let span = lit - dark;
+    // reading k is `k` frames after the change; reading 0 is the signal before it
+    let mut decay = vec![lit];
+    let mut dark_scans = 0;
+    for _ in 1..kept {
+        decay.push(frame_step(&t, &mut q, 0.0));
+        dark_scans += 1;
+    }
+    // ... and off for 10 s in all, then on
+    for _ in dark_scans..frames(10.0) {
+        frame_step(&t, &mut q, 0.0);
+    }
+    let mut build = vec![dark];
+    for _ in 1..kept {
+        build.push(frame_step(&t, &mut q, LAG_TEST_SIGNAL_NA));
+    }
+
+    let decay_pct: Vec<f64> = decay.iter().map(|s| (100.0 * (s - dark) / span).max(1e-12)).collect();
+    let build_pct: Vec<f64> = build.iter().map(|s| 100.0 * (s - dark) / span).collect();
+    LagFigures {
+        build_60: at_time(&build_pct, 0.06, frame_s, false),
+        decay_60: at_time(&decay_pct, 0.06, frame_s, true),
+        decay_200: at_time(&decay_pct, 0.2, frame_s, true),
+    }
+}
+
+/// `readings[k]` is the reading `k` frames after a change; the value at time `t` between two
+/// readings, interpolated linearly or (for a decay) linearly in the logarithm.
+fn at_time(readings: &[f64], t: f64, frame_s: f64, log: bool) -> f64 {
+    let x = t / frame_s;
+    let k = (x.floor() as usize).min(readings.len() - 2);
+    let f = x - k as f64;
+    let (a, b) = (readings[k], readings[k + 1]);
+    if log { (a.ln() * (1.0 - f) + b.ln() * f).exp() } else { a * (1.0 - f) + b * f }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ACTIVE_50: f64 = 0.04 * (52.0 / 64.0) * (575.0 / 625.0);
+
+    #[test]
+    fn dark_equilibrium_is_a_fixed_point_of_the_frame_step() {
+        for kind in [TubeKind::Plumbicon, TubeKind::PlumbiconBias, TubeKind::PlumbiconAct] {
+            for ch in kind.channels(BEAM_RATIO_DEFAULT, ACTIVE_50).unwrap() {
+                let q0 = dark_equilibrium(&ch);
+                let mut q = q0;
+                let s = frame_step(&ch, &mut q, 0.0);
+                assert!((q - q0).abs() < 1e-9 && (s - ch.dark_na - ch.bias_na).abs() < 1e-9, "{kind:?}: {q0} -> {q}, read {s}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_weak_beam_cannot_hold_off_the_dark_current() {
+        let ch = TubeKind::Plumbicon.channels(0.001, ACTIVE_50).unwrap()[1];
+        let q0 = dark_equilibrium(&ch);
+        let mut q = q0;
+        frame_step(&ch, &mut q, 0.0);
+        assert!((q - q0).abs() < 1e-9, "{q0} -> {q}");
+        assert!(q0 > 0.9 * ch.saturation_na);
+    }
+
+    #[test]
+    fn an_element_far_below_the_cathode_potential_still_scans() {
+        let ch = TubeKind::Plumbicon.channels(BEAM_RATIO_DEFAULT, ACTIVE_50).unwrap()[1];
+        // exp(-q/Q_T) is out of range here; the beam takes the element to about -Q_T ln(beam/Q_T)
+        let after = scan(ch.beam_na, ch.charge_scale_na, -10_000.0);
+        assert!(after.is_finite() && after <= -10_000.0 && after > -10_001.0, "{after}");
+    }
+
+    #[test]
+    fn the_scan_removes_all_the_charge_the_beam_can_reach() {
+        // a charge below the beam is taken off entirely, and the rest of the beam only pushes
+        // the element a few Q_T below the cathode potential
+        let after = scan(600.0, 5.64, 100.0);
+        assert!(after < 0.0 && after > -40.0, "{after}");
+        // a charge above the beam loses exactly the beam
+        assert_eq!(scan(600.0, 5.64, 1000.0), 400.0);
+    }
 }

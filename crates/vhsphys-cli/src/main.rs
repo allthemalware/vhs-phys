@@ -127,19 +127,17 @@ enum AudioMode {
     None,
 }
 
-/// Camera pickup tube target chemistry ahead of the VHS recorder.
+/// The camera's pickup tubes, ahead of the VHS recorder.
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum CameraTubeArg {
-    /// No camera tube lag (direct video input).
+    /// No camera stage: the input is the video signal itself.
     Off,
-    /// Lead-oxide (PbO) studio broadcast tube: warm red/amber highlight comet-tails.
+    /// Plumbicon (XQ1020): lag, and comet tails behind highlights the beam cannot take off.
     Plumbicon,
-    /// Se-As-Te 1980s OB/studio tube: amber-green highlight comet-tails.
-    Saticon,
-    /// ZnSe-ZnCdTe low-light/camcorder tube: pronounced green-amber trailing lights.
-    Newvicon,
-    /// Antimony-trisulfide (Sb2S3) tube: heavy photoconductive lag and long trails.
-    Vidicon,
+    /// Plumbicon with internal light bias (XQ1410): less lag, the same comet tails.
+    PlumbiconBias,
+    /// Plumbicon with an anti-comet-tail gun (XQ1520): lag, no comet tails.
+    PlumbiconAct,
 }
 
 #[derive(clap::Args)]
@@ -164,12 +162,12 @@ struct RunArgs {
     /// Sound: process (through the simulated tape and deck), copy (untouched) or none.
     #[arg(long, value_enum, default_value_t = AudioMode::Process)]
     audio: AudioMode,
-    /// Camera pickup tube chemistry for highlight comet-tails / lag: plumbicon, saticon, newvicon, vidicon.
+    /// Camera pickup tube ahead of the recorder: lag and comet tails (off, plumbicon, plumbicon-bias, plumbicon-act).
     #[arg(long, value_enum)]
     camera_tube: Option<CameraTubeArg>,
-    /// Enable CRT P22 phosphor persistence on the decoded display output.
-    #[arg(long)]
-    phosphor: bool,
+    /// Exposure of the camera tubes in stops: positive overexposes, so highlights leave tails.
+    #[arg(long, value_name = "N", allow_negative_numbers = true)]
+    iris_stops: Option<f64>,
     /// Start time in seconds.
     #[arg(long)]
     start: Option<f64>,
@@ -243,14 +241,13 @@ fn run(a: RunArgs) -> Result<()> {
         let name = match tube {
             CameraTubeArg::Off => "off",
             CameraTubeArg::Plumbicon => "plumbicon",
-            CameraTubeArg::Saticon => "saticon",
-            CameraTubeArg::Newvicon => "newvicon",
-            CameraTubeArg::Vidicon => "vidicon",
+            CameraTubeArg::PlumbiconBias => "plumbicon-bias",
+            CameraTubeArg::PlumbiconAct => "plumbicon-act",
         };
         other_sets.insert(0, format!("camera.tube={name}"));
     }
-    if a.phosphor {
-        other_sets.insert(0, "camera.phosphor_enabled=true".to_string());
+    if let Some(stops) = a.iris_stops {
+        other_sets.insert(0, format!("camera.iris_stops={stops:?}"));
     }
     let mut text = file_text;
     if !seed_sets.is_empty() {
