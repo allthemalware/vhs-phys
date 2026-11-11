@@ -43,7 +43,9 @@ fn wrap_deg(a: f64) -> f64 {
     (a + 180.0).rem_euclid(360.0) - 180.0
 }
 
-const ORANGE: [u8; 3] = [210, 120, 40];
+/// A muted orange: turned 30 degrees either way it stays inside the RGB cube, so no channel
+/// clips and the measured saturation is the decoder's.
+const ORANGE: [u8; 3] = [190, 130, 80];
 
 fn render(text: &str, input: &[Frame]) -> Vec<Frame> {
     Session::run(config::build(Some("pristine"), text, 2).unwrap(), input)
