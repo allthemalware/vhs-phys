@@ -19,13 +19,13 @@
 //! same output.
 
 use crate::dsp::{lagrange3, Biquad};
-use crate::head::HeadParams;
-use crate::interference::{audio_add, audio_gain};
+use super::head::HeadParams;
+use super::interference::{audio_add, audio_gain};
 use crate::interference_params::InterferenceParams;
-use crate::mech::Mech;
-use crate::pipeline::Params;
+use super::mech::Mech;
+use super::pipeline::Params;
 use crate::rng::Rng;
-use crate::tape::{Kind, Tape};
+use super::tape::{Kind, Tape};
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
@@ -663,7 +663,7 @@ impl AudioProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::condition::Condition;
+    use super::super::condition::Condition;
 
     fn params(preset: &str, seed: u64) -> Params {
         Condition::preset(preset).unwrap().to_params(seed)

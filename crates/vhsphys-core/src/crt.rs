@@ -10,10 +10,10 @@
 //!
 //! Frozen contract: names, signatures and the semantics written here.
 
-use crate::consts::{FH, LINES};
-use crate::interference::{approach_scale, dipole_field, electron_momentum, mains_waveform, E_CHARGE};
+use super::consts::{FH, LINES};
+use super::interference::{approach_scale, dipole_field, electron_momentum, mains_waveform, E_CHARGE};
 use crate::interference_params::*;
-use crate::video::{row_to_line, Frame};
+use super::video::{row_to_line, Frame};
 
 /// A magnet nearer the axis than this sits on the neck of the tube and is taken to point along it; further out it points at the axis.
 const ON_AXIS_RHO_M: f64 = 0.05;

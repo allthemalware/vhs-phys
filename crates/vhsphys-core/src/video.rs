@@ -1,28 +1,16 @@
-//! NTSC raster: RGB frame <-> baseband luma/chroma at 4 x fsc, including the
+//! Raster of the engine's television standard (525 lines in the `ntsc` engine, 625 in the
+//! `pal` one): RGB frame <-> baseband luma/chroma at 4 x fsc, including the
 //! full vertical-sync structure (equalising pulses, serrated vsync, half-line
 //! field offset) so that the head-switch position relative to vsync is real.
 //!
 //! Chroma is carried as a complex baseband value `C = cu + j*cv` in IRE, with
 //! `cu` along the +U axis. The colour burst is `-BURST_AMP` on `cu` (180 deg).
 
-use crate::consts::*;
-use crate::format::TvStandard;
-use std::f32::consts::FRAC_1_SQRT_2;
+use super::consts::*;
 use std::sync::OnceLock;
 
-/// An RGB frame at the active-picture size (754 x 480).
-#[derive(Clone)]
-pub struct Frame {
-    pub w: usize,
-    pub h: usize,
-    pub rgb: Vec<u8>,
-}
-
-impl Frame {
-    pub fn new(w: usize, h: usize) -> Self {
-        Self { w, h, rgb: vec![0; w * h * 3] }
-    }
-}
+/// The RGB frame is shared by both engines; it lives in `crate::frame`.
+pub use crate::frame::Frame;
 
 /// One frame in the baseband domain (FRAME_BB samples each).
 #[derive(Clone)]
@@ -60,19 +48,40 @@ fn pulse(buf: &mut [f32], start: usize, width: usize) {
     }
 }
 
+/// What a half line of the frame carries in the vertical interval.
+#[derive(Clone, Copy, PartialEq)]
+enum Interval {
+    None,
+    Equalising,
+    Broad,
+}
+
 fn build_structure() -> Structure {
     let mut sync = vec![BLANK_IRE; FRAME_BB];
     let mut burst_line = vec![false; LINES];
-    for h in 0..(2 * LINES) {
-        let hp = if h >= LINES { h - LINES } else { h };
+    let half_lines = 2 * LINES;
+    // The interval of each field is the equalising pulses, the broad pulses, the equalising
+    // pulses again; field 1 starts at half line 0, field 2 at half line LINES. An interval
+    // that starts before the field's first half line wraps round to the end of the frame.
+    let mut interval = vec![Interval::None; half_lines];
+    for field_start in [0, LINES] {
+        let first = field_start as i64 + VSYNC_FIRST_HALF_LINE;
+        let broad = VSYNC_EQ_HALF_LINES..VSYNC_EQ_HALF_LINES + VSYNC_BROAD_HALF_LINES;
+        for j in 0..(2 * VSYNC_EQ_HALF_LINES + VSYNC_BROAD_HALF_LINES) {
+            let h = (first + j as i64).rem_euclid(half_lines as i64) as usize;
+            interval[h] = if broad.contains(&j) { Interval::Broad } else { Interval::Equalising };
+        }
+    }
+    for h in 0..half_lines {
         let s0 = h * HALF_LINE_BB;
-        if hp < 6 || (12..18).contains(&hp) {
-            pulse(&mut sync, s0, EQ_PULSE_W);
-        } else if (6..12).contains(&hp) {
-            pulse(&mut sync, s0, HALF_LINE_BB - HSYNC_W);
-        } else if h % 2 == 0 {
-            pulse(&mut sync, s0, HSYNC_W);
-            burst_line[h / 2] = true;
+        match interval[h] {
+            Interval::Equalising => pulse(&mut sync, s0, EQ_PULSE_W),
+            Interval::Broad => pulse(&mut sync, s0, HALF_LINE_BB - HSYNC_W),
+            Interval::None if h % 2 == 0 => {
+                pulse(&mut sync, s0, HSYNC_W);
+                burst_line[h / 2] = true;
+            }
+            Interval::None => {}
         }
     }
     Structure { sync, burst_line }
@@ -80,41 +89,21 @@ fn build_structure() -> Structure {
 
 #[inline]
 pub fn rgb_to_ycc(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
-    rgb_to_ycc_std(r, g, b, TvStandard::Ntsc)
-}
-
-#[inline]
-pub fn rgb_to_ycc_std(r: f32, g: f32, b: f32, std: TvStandard) -> (f32, f32, f32) {
     let y = 0.299 * r + 0.587 * g + 0.114 * b;
     let u = 0.492 * (b - y);
     let v = 0.877 * (r - y);
-    let setup = std.setup_ire();
-    let span = std.video_span_ire();
-    (setup + span * y, span * u, span * v)
+    (SETUP_IRE + VIDEO_SPAN_IRE * y, VIDEO_SPAN_IRE * u, VIDEO_SPAN_IRE * v)
 }
 
 #[inline]
 pub fn ycc_to_rgb(y_ire: f32, cu: f32, cv: f32) -> [f32; 3] {
-    ycc_to_rgb_std(y_ire, cu, cv, TvStandard::Ntsc)
-}
-
-#[inline]
-pub fn ycc_to_rgb_std(y_ire: f32, cu: f32, cv: f32, std: TvStandard) -> [f32; 3] {
-    let setup = std.setup_ire();
-    let span = std.video_span_ire();
-    let y = (y_ire - setup) / span;
-    let u = cu / span;
-    let v = cv / span;
+    let y = (y_ire - SETUP_IRE) / VIDEO_SPAN_IRE;
+    let u = cu / VIDEO_SPAN_IRE;
+    let v = cv / VIDEO_SPAN_IRE;
     let r = y + v / 0.877;
     let b = y + u / 0.492;
     let g = (y - 0.299 * r - 0.114 * b) / 0.587;
     [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]
-}
-
-/// PAL V-axis switch sign (+1 or -1) on `frame_line`, alternating on consecutive lines of a field.
-#[inline]
-pub fn pal_v_sign(frame_line: usize) -> f32 {
-    if frame_line % 2 == 0 { 1.0 } else { -1.0 }
 }
 
 /// Frame line (0-based) and field of display row `r` (0..480).
@@ -127,16 +116,8 @@ pub fn burst_present(line: usize) -> bool {
     structure().1[line]
 }
 
-/// Encode an RGB frame (754 x 480) to baseband Y / C (NTSC).
+/// Encode an RGB frame (754 x 480) to baseband Y / C.
 pub fn encode_frame(frame: &Frame) -> Baseband {
-    encode_frame_with_standard(frame, TvStandard::Ntsc)
-}
-
-/// Encode an RGB frame (754 x 480) to baseband Y / C using `std` (`Ntsc` or `Pal`).
-///
-/// In PAL mode, the V (R-Y) component alternates sign on consecutive field lines (`pal_v_sign`),
-/// the colour burst swings between +135 deg and -135 deg (+/-45 deg about -U), and black setup is 0 IRE.
-pub fn encode_frame_with_standard(frame: &Frame, std: TvStandard) -> Baseband {
     assert!(frame.w == ACTIVE_W && frame.h == ACTIVE_H, "frame must be {ACTIVE_W}x{ACTIVE_H}");
     let (sync, burst_line) = structure();
     let mut bb = Baseband { y: sync.clone(), cu: vec![0.0; FRAME_BB], cv: vec![0.0; FRAME_BB] };
@@ -144,20 +125,11 @@ pub fn encode_frame_with_standard(frame: &Frame, std: TvStandard) -> Baseband {
     for line in 0..LINES {
         if burst_line[line] {
             let s0 = line * BB_PER_LINE + BURST_START;
-            let v_sign = pal_v_sign(line);
             for i in 0..BURST_LEN {
                 // 4-sample raised-cosine edges keep the burst narrow-band
                 let e = (i.min(BURST_LEN - 1 - i) as f32 / 4.0).min(1.0);
                 let w = 0.5 - 0.5 * (std::f32::consts::PI * e).cos();
-                match std {
-                    TvStandard::Ntsc => {
-                        bb.cu[s0 + i] = -BURST_AMP_IRE * w;
-                    }
-                    TvStandard::Pal => {
-                        bb.cu[s0 + i] = -BURST_AMP_IRE * FRAC_1_SQRT_2 * w;
-                        bb.cv[s0 + i] = v_sign * BURST_AMP_IRE * FRAC_1_SQRT_2 * w;
-                    }
-                }
+                bb.cu[s0 + i] = -BURST_AMP_IRE * w;
             }
         }
     }
@@ -165,10 +137,6 @@ pub fn encode_frame_with_standard(frame: &Frame, std: TvStandard) -> Baseband {
     for row in 0..ACTIVE_H {
         let (line, _) = row_to_line(row);
         let base = line * BB_PER_LINE + ACTIVE_START;
-        let v_sign = match std {
-            TvStandard::Ntsc => 1.0,
-            TvStandard::Pal => pal_v_sign(line),
-        };
         for x in 0..ACTIVE_W {
             let p = (row * ACTIVE_W + x) * 3;
             let (r, g, b) = (
@@ -176,10 +144,10 @@ pub fn encode_frame_with_standard(frame: &Frame, std: TvStandard) -> Baseband {
                 frame.rgb[p + 1] as f32 / 255.0,
                 frame.rgb[p + 2] as f32 / 255.0,
             );
-            let (y, u, v) = rgb_to_ycc_std(r, g, b, std);
+            let (y, u, v) = rgb_to_ycc(r, g, b);
             bb.y[base + x] = y;
             bb.cu[base + x] = u;
-            bb.cv[base + x] = v * v_sign;
+            bb.cv[base + x] = v;
         }
     }
     bb
@@ -187,18 +155,12 @@ pub fn encode_frame_with_standard(frame: &Frame, std: TvStandard) -> Baseband {
 
 /// Perfect-timing decode used for tests and the `--bypass` reference mode.
 pub fn decode_ideal(bb: &Baseband) -> Frame {
-    decode_ideal_with_standard(bb, TvStandard::Ntsc)
-}
-
-/// Perfect-timing decode for `std` (`Ntsc` or `Pal`, where `bb.cv` has already been un-switched
-/// by `decode_planes` or is un-switched here when called directly on `encode_frame_with_standard`).
-pub fn decode_ideal_with_standard(bb: &Baseband, std: TvStandard) -> Frame {
     let mut f = Frame::new(ACTIVE_W, ACTIVE_H);
     for row in 0..ACTIVE_H {
         let (line, _) = row_to_line(row);
         let base = line * BB_PER_LINE + ACTIVE_START;
         for x in 0..ACTIVE_W {
-            let rgb = ycc_to_rgb_std(bb.y[base + x], bb.cu[base + x], bb.cv[base + x], std);
+            let rgb = ycc_to_rgb(bb.y[base + x], bb.cu[base + x], bb.cv[base + x]);
             let p = (row * ACTIVE_W + x) * 3;
             for k in 0..3 {
                 f.rgb[p + k] = (rgb[k] * 255.0 + 0.5) as u8;
@@ -239,9 +201,17 @@ pub fn test_pattern() -> Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::TvStandard;
+
+    /// These tests pin the figures of the 525-line format; the other engine runs the same
+    /// file against its own constants, so they return early there.
+    const NTSC: bool = matches!(STANDARD, TvStandard::Ntsc);
 
     #[test]
     fn vertical_sync_structure() {
+        if !NTSC {
+            return;
+        }
         let (sync, burst) = structure();
         // 18 half-lines of vertical interval at each field start, no burst in them
         assert!(!burst[0] && !burst[8]);
@@ -273,6 +243,9 @@ mod tests {
 
     #[test]
     fn peak_composite_levels_are_legal_for_75_percent_bars() {
+        if !NTSC {
+            return;
+        }
         let f = test_pattern();
         let bb = encode_frame(&f);
         // 75% yellow: Y' = 0.665 -> luma 69 IRE; chroma amplitude 31 IRE, so the

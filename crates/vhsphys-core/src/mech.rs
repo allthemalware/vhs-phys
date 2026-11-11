@@ -21,8 +21,8 @@
 //!   onto the drum ("flagging" at the top), and a head-switch error at the end.
 
 use serde::{Deserialize, Serialize};
-use crate::consts::*;
-use crate::head::{Controls, STRIDE};
+use super::consts::*;
+use super::head::{Controls, STRIDE};
 use crate::rng::{hash3, Rng};
 use std::f64::consts::PI;
 

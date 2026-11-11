@@ -11,7 +11,7 @@
 //! Names, signatures and the semantics written here are fixed; `tests/interference_physics.rs` and
 //! `tests/interference_signal.rs` pin the behaviour.
 
-use crate::consts::{FS_RF, OS};
+use super::consts::{FS_RF, OS, SYNC_IRE, WHITE_IRE};
 use crate::interference_params::*;
 use crate::rng::hash3;
 use std::f64::consts::PI;
@@ -32,8 +32,9 @@ pub const GSM_RAMP_S: f64 = 28.0e-6;
 pub const LTE_SUBFRAME_S: f64 = 1.0e-3;
 pub const LTE_ON_PROBABILITY: f64 = 0.3;
 pub const LTE_RAMP_S: f64 = 10.0e-6;
-/// 1 V peak to peak of composite video is 140 IRE.
-pub const VOLTS_PER_IRE: f64 = 1.0 / 140.0;
+/// 1 V peak to peak of composite video, sync tip to peak white, is `WHITE_IRE - SYNC_IRE` units
+/// (140 IRE in the 525-line format).
+pub const VOLTS_PER_IRE: f64 = 1.0 / (WHITE_IRE - SYNC_IRE) as f64;
 /// The mains waveform is a fundamental with a 3rd and 5th harmonic (a rectifier-loaded line).
 pub const MAINS_H3: f64 = 0.2;
 pub const MAINS_H5: f64 = 0.1;

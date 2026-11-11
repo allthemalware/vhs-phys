@@ -10,9 +10,9 @@
 //! with its own local spacing and magnetisation scale.
 
 use serde::{Deserialize, Serialize};
-use crate::consts::*;
+use super::consts::*;
 use crate::dsp::*;
-use crate::record::Transition;
+use super::record::Transition;
 use crate::rng::Rng;
 use std::f32::consts::PI as PI32;
 
@@ -138,6 +138,10 @@ impl HeadParams {
     }
 }
 
+/// Carrier frequency at which the head's nominal output is taken: the middle of the luma FM
+/// band, half a megahertz above the sync tip (3.9 MHz in the 525-line format).
+pub const NOMINAL_CARRIER_HZ: f64 = F_SYNC_TIP + 0.5e6;
+
 /// Fundamental amplitude of the readback of a saturated square wave of
 /// frequency `f` (state +/-1, pulses of area 2): `(4/pi) * w * exp(-w*h)`.
 pub fn nominal_fm_amplitude(f: f64, h_samples: f64) -> f64 {
@@ -154,7 +158,7 @@ pub fn nominal_fm_amplitude(f: f64, h_samples: f64) -> f64 {
 /// and the media AM noise, an amplitude, scales with `sqrt(58 / width)`. The reference
 /// is the SP track pitch, for which both factors are exactly 1.
 pub fn head_front_end(buf: &mut [f32], hp: &HeadParams, rng: &mut Rng) {
-    let a_nom = nominal_fm_amplitude(3.9e6, hp.h0_samples());
+    let a_nom = nominal_fm_amplitude(NOMINAL_CARRIER_HZ, hp.h0_samples());
     let cnr_db = hp.cnr_db + 10.0 * (hp.width_um / TRACK_PITCH_UM).log10();
     let media_am = hp.media_am_noise * (TRACK_PITCH_UM / hp.width_um).sqrt();
     // white noise over fs/2 whose 6 MHz share gives the requested CNR
@@ -190,6 +194,11 @@ pub fn azimuth_smooth(buf: &mut [f32], width_um: f64, theta_deg: f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::standard::TvStandard;
+
+    /// These tests pin the figures of the 525-line format; the other engine runs the same
+    /// file against its own constants, so they return early there.
+    const NTSC: bool = matches!(STANDARD, TvStandard::Ntsc);
 
     /// An alternating pulse train at frequency f has fundamental amplitude
     /// (4/pi) w exp(-w h) per the Lorentzian spectrum: this is Wallace's law.
@@ -242,6 +251,9 @@ mod tests {
 
     #[test]
     fn azimuth_boxcar_matches_sinc_law() {
+        if !NTSC {
+            return;
+        }
         // 12 deg across a 58 um head: loss at 4 MHz about -28 dB (envelope), at 629 kHz ~ -14 dB
         let n = 40_000;
         for (f, want_db, tol) in [(0.629e6, -13.8, 2.5), (4.0e6, -28.0, 6.0)] {

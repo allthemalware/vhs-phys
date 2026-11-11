@@ -3,7 +3,11 @@
 //! Sources (details in `docs/RESEARCH.md`): SMPTE ST 32-1998 (VHS type H),
 //! Sencore TT189, vhs-decode format tables.
 
+use crate::standard::TvStandard;
 use std::f64::consts::PI;
+
+/// The standard this constant set describes.
+pub const STANDARD: TvStandard = TvStandard::Ntsc;
 
 // ---------------------------------------------------------------- video timing
 /// NTSC colour subcarrier, 315/88 MHz.
@@ -23,20 +27,27 @@ pub const OS: usize = RF_PER_LINE / BB_PER_LINE;
 pub const FS_RF: f64 = RF_PER_LINE as f64 * FH;
 pub const FS_BB: f64 = BB_PER_LINE as f64 * FH;
 
-pub const FIELD_RF: usize = 262 * RF_PER_LINE + RF_PER_LINE / 2;
+pub const FIELD_RF: usize = (LINES / 2) * RF_PER_LINE + RF_PER_LINE / 2;
 pub const FRAME_RF: usize = LINES * RF_PER_LINE;
 pub const FIELD_BB: usize = FIELD_RF / OS;
 pub const FRAME_BB: usize = LINES * BB_PER_LINE;
 pub const HALF_LINE_BB: usize = BB_PER_LINE / 2;
 
+/// Vertical interval per field, in half lines counted from the field's start (frame half-line
+/// 0 for field 1, LINES for field 2): pre-equalising pulses start this many half lines
+/// before it (PAL line 1 opens with the broad pulses; NTSC line 1 with the equalising ones).
+pub const VSYNC_FIRST_HALF_LINE: i64 = 0;
+/// Equalising pulses before and after the broad pulses, half lines each side.
+pub const VSYNC_EQ_HALF_LINES: usize = 6;
+/// Broad (field sync) pulses, half lines.
+pub const VSYNC_BROAD_HALF_LINES: usize = 6;
+
 // Levels in IRE.
 pub const SYNC_IRE: f32 = -40.0;
 pub const BLANK_IRE: f32 = 0.0;
 pub const SETUP_IRE: f32 = 7.5;
-pub const SETUP_IRE_PAL: f32 = 0.0;
 pub const WHITE_IRE: f32 = 100.0;
 pub const VIDEO_SPAN_IRE: f32 = 92.5;
-pub const VIDEO_SPAN_IRE_PAL: f32 = 100.0;
 pub const BURST_AMP_IRE: f32 = 20.0;
 
 // Baseband line layout (samples at 4 x fsc, 69.8 ns each).
@@ -59,26 +70,33 @@ pub const HEAD_SPEED: f64 = PI * DRUM_DIAMETER_M * FRAME_RATE;
 pub const UM_PER_SAMPLE: f64 = HEAD_SPEED / FS_RF * 1.0e6;
 pub const TAPE_SPEED_SP: f64 = 0.03335;
 pub const TRACK_PITCH_UM: f64 = 58.0;
-pub const TRACK_PITCH_UM_PAL: f64 = 49.0;
 pub const TRACK_ANGLE_DEG: f64 = 5.0 + 58.0 / 60.0 + 9.9 / 3600.0;
 pub const VIDEO_AREA_MM: f64 = 10.07;
 pub const VIDEO_CENTRE_MM: f64 = 6.2;
 pub const TAPE_WIDTH_MM: f64 = 12.65;
 pub const AZIMUTH_DEG: f64 = 6.0;
+/// The 525-line format defines SP, LP and EP.
+pub const HAS_EP: bool = true;
+/// SMPTE ST 32's slow-speed luminance rules (table 4 sub-emphasis, the fH/2 carrier
+/// interleave, the undoubled LP burst) are 525-line rules.
+pub const ST32_SLOW_SPEED_RULES: bool = true;
 
 /// Luma FM: sync tip 3.4 MHz, 1 MHz per 140 IRE (white = 4.4 MHz).
 pub const F_SYNC_TIP: f64 = 3.4e6;
-/// PAL VHS Luma FM: sync tip 3.8 MHz, 1 MHz per 140 IRE (white = 4.8 MHz).
-pub const F_SYNC_TIP_PAL: f64 = 3.8e6;
 pub const HZ_PER_IRE: f64 = 1.0e6 / 140.0;
 pub const PRE_EMPH_TAU: f64 = 1.3e-6;
 pub const PRE_EMPH_RATIO: f64 = 5.0; // 1 + Rb/Ra, Rb/Ra = 4
 pub const WHITE_CLIP_IRE: f32 = (-40.0 + 1.6 * 140.0) as f32; // 184
 pub const DARK_CLIP_IRE: f32 = (-40.0 - 0.4 * 140.0) as f32; // -96
-/// Colour-under carrier, 40 x fH.
-pub const F_CU: f64 = 40.0 * FH;
-/// PAL VHS colour-under carrier cycles per line (40 + 1/8 fH = 626.95 kHz).
-pub const PAL_CU_CYCLES_PER_LINE: f64 = 40.125;
+/// Colour-under carrier cycles per line: 40 x fH = 629 kHz.
+pub const CU_CYCLES_PER_LINE: f64 = 40.0;
+pub const F_CU: f64 = CU_CYCLES_PER_LINE * FH;
+/// Colour-under phase rotation per line, in quarter turns, for head parity 0 and 1: channel 1
+/// advances 90 deg per line, channel 2 retards 90 deg per line.
+pub const CU_ROTATION_QUARTERS: [i64; 2] = [1, -1];
+
+/// Mains frequency the equipment is expected to meet in a 525-line country.
+pub const MAINS_HZ_DEFAULT: f64 = 60.0;
 
 /// Along-track offset of adjacent tracks: the tape advance per field equals 1.5 H of
 /// head travel, so neighbouring tracks are line aligned (see docs/RESEARCH.md 3.4).

@@ -10,22 +10,23 @@
 //! Intermediate results are cached per field and evicted when no longer needed.
 
 use serde::{Deserialize, Serialize};
-use crate::audio::AudioParams;
-use crate::camera::{CameraParams, CameraTube, PhosphorState};
-use crate::composite::CompositeParams;
-use crate::consts::*;
-use crate::decode::{decode_frame, demod_chroma, DecodeParams, StreamView};
-use crate::electronics::{process_segment, DeckParams};
-use crate::format::{TapeSpeed, TvStandard};
-use crate::head::*;
-use crate::interference::{head_signal_gain, rf_pickup_add};
+use super::audio::AudioParams;
+use super::camera::{CameraParams, CameraTube, PhosphorState};
+use super::composite::CompositeParams;
+use super::consts::*;
+use super::decode::{decode_frame, demod_chroma, DecodeParams, StreamView};
+use super::electronics::{process_segment, DeckParams};
+use super::format::TapeSpeed;
+use super::head::*;
+use super::interference::{head_signal_gain, rf_pickup_add};
 use crate::interference_params::InterferenceParams;
-use crate::mech::{Mech, MechParams};
-use crate::record::*;
+use super::mech::{Mech, MechParams};
+use super::record::*;
 use crate::rng::Rng;
-use crate::tape::{Tape, TapeParams};
-use crate::tracking::{lateral_weights, TrackingParams, NEIGHBOURS};
-use crate::video::{encode_frame_with_standard, Baseband, Frame};
+use super::tape::{Tape, TapeParams};
+use super::tracking::{lateral_weights, TrackingParams, NEIGHBOURS};
+use super::video::{encode_frame, Baseband, Frame};
+use crate::standard::TvStandard;
 use rayon::prelude::*;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -53,7 +54,7 @@ pub struct Params {
     pub tracking: TrackingParams,
     /// Tape speed: sets the track pitch, the tape advance and the audio bandwidth.
     pub speed: TapeSpeed,
-    /// Television and VHS RF standard (`ntsc` default, or `pal`).
+    /// The television standard this engine was built for (`consts::STANDARD`); not validated yet.
     pub standard: TvStandard,
     /// Camera pickup tube target lag / comet-tails and CRT phosphor persistence (off by default).
     pub camera: CameraParams,
@@ -77,21 +78,12 @@ impl Default for Params {
             mech: MechParams::default(),
             tracking: TrackingParams::default(),
             speed: TapeSpeed::default(),
-            standard: TvStandard::default(),
+            standard: STANDARD,
             camera: CameraParams::default(),
             composite: CompositeParams::default(),
             audio: AudioParams::default(),
             interference: InterferenceParams::default(),
         }
-    }
-}
-
-impl Params {
-    /// Propagate the top-level `standard` into the record, deck and decode stages.
-    pub fn sync_standard(&mut self) {
-        self.record.standard = self.standard;
-        self.deck.standard = self.standard;
-        self.decode.standard = self.standard;
     }
 }
 
@@ -217,7 +209,7 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64) -> Ve
     if itf.rf_on() {
         // What the head leads pick up is compared with the nominal, unworn head signal: a worn
         // head sees relatively more of it.
-        rf_pickup_add(itf, g0, &mut buf, nominal_fm_amplitude(p.standard.nominal_carrier_hz(), hp.h0_samples()));
+        rf_pickup_add(itf, g0, &mut buf, nominal_fm_amplitude(NOMINAL_CARRIER_HZ, hp.h0_samples()));
     }
     buf
 }
@@ -272,18 +264,17 @@ fn segment(p: &Params, rf: &HashMap<i64, Arc<Vec<f32>>>, n: i64) -> SegMid {
 pub fn calibrate(p: &Params) -> Calibration {
     // clean heads, nominal deck, black picture with sync + burst on every line
     let mut clean = p.clone();
-    clean.sync_standard();
     for h in clean.heads.iter_mut() {
         *h = HeadParams { cnr_db: 400.0, media_am_noise: 0.0, ..HeadParams::default() };
     }
-    clean.deck = DeckParams { standard: clean.standard, ..DeckParams::default() };
+    clean.deck = DeckParams::default();
     clean.tape = TapeParams::default();
     clean.mech = MechParams::none();
     clean.tracking = TrackingParams::default();
     // the alignment is done on the bench, away from phones, transmitters and magnets
     clean.interference = InterferenceParams::default();
     let cx = Ctx::new(clean.clone());
-    let black = Arc::new(encode_frame_with_standard(&Frame::new(ACTIVE_W, ACTIVE_H), clean.standard));
+    let black = Arc::new(encode_frame(&Frame::new(ACTIVE_W, ACTIVE_H)));
     let src = WindowSource { first: -2, frames: vec![black.clone(); 8], blank: Baseband::blank() };
     let n = 2i64;
     let (g0, len) = track_window(n);
@@ -313,7 +304,7 @@ pub fn calibrate(p: &Params) -> Calibration {
     // actually lands (path delay) and how large it is there
     let start = (g0 / OS as i64) + (100 * BB_PER_LINE) as i64;
     let line_start = (start / BB_PER_LINE as i64 + 1) * BB_PER_LINE as i64;
-    let dp = DecodeParams { standard: clean.standard, ..DecodeParams::default() };
+    let dp = DecodeParams::default();
     let (re, im) = demod_chroma(&view, line_start - 200, 30 * BB_PER_LINE + 400, &dp);
     let (mut wsum, mut csum) = (0.0f64, 0.0f64);
     for l in 2..28 {
@@ -368,9 +359,8 @@ impl Session {
     /// index, so a plugin host can render any part of a clip and get the same
     /// tape every time. Frames pushed are numbered from `start`.
     pub fn with_start(params: Params, start: i64) -> Self {
-        let mut params = params;
-        params.sync_standard();
         let cal = calibrate(&params);
+        let mut params = params;
         params.deck.fm_gain = cal.fm_gain;
         params.decode.burst_nominal = cal.burst_nominal;
         params.decode.burst_boost = params.record.burst_boost as f64;
@@ -399,9 +389,9 @@ impl Session {
     pub fn push(&mut self, f: &Frame) {
         let bb = if self.params.camera.tube_on() {
             let cam_f = self.camera_tube.process_frame(f);
-            encode_frame_with_standard(&cam_f, self.params.standard)
+            encode_frame(&cam_f)
         } else {
-            encode_frame_with_standard(f, self.params.standard)
+            encode_frame(f)
         };
         self.frames.push_back(Arc::new(bb));
         self.pushed += 1;
