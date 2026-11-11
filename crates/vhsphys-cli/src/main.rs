@@ -107,6 +107,13 @@ struct Cli {
 enum Cmd {
     /// Process a video file.
     Run(RunArgs),
+    /// Interactive terminal wizard guiding parameter setup.
+    Wizard {
+        /// Optional input file to pre-populate.
+        input: Option<PathBuf>,
+        /// Optional output file to pre-populate.
+        output: Option<PathBuf>,
+    },
     /// List the condition presets.
     Presets,
     /// Print the full parameter set (TOML) of a preset, as a starting point for a config file.
@@ -633,9 +640,249 @@ fn show<E: Engine>(standard: TvStandard, preset: &str, seed: u64, condition: boo
     Ok(())
 }
 
+fn ask_line(prompt_text: &str, default_val: Option<&str>) -> Result<String> {
+    print!("{prompt_text}");
+    if let Some(d) = default_val {
+        print!(" [{d}]");
+    }
+    print!(": ");
+    std::io::stdout().flush()?;
+    let mut buf = String::new();
+    let n = std::io::stdin().read_line(&mut buf)?;
+    if n == 0 {
+        if let Some(d) = default_val {
+            return Ok(d.to_string());
+        }
+        bail!("Interactive input ended");
+    }
+    let trimmed = buf.trim();
+    if trimmed.is_empty() {
+        if let Some(d) = default_val {
+            return Ok(d.to_string());
+        }
+    }
+    Ok(trimmed.to_string())
+}
+
+fn ask_choice(prompt_text: &str, choices: &[(&str, &str)], default_idx: usize) -> Result<usize> {
+    println!("\n{prompt_text}");
+    for (i, (name, desc)) in choices.iter().enumerate() {
+        if desc.is_empty() {
+            println!("  {}) {}", i + 1, name);
+        } else {
+            println!("  {}) {:<16} - {}", i + 1, name, desc);
+        }
+    }
+    let default_str = (default_idx + 1).to_string();
+    loop {
+        let answer = ask_line(&format!("Select (1-{})", choices.len()), Some(&default_str))?;
+        if let Ok(idx) = answer.parse::<usize>() {
+            if idx >= 1 && idx <= choices.len() {
+                return Ok(idx - 1);
+            }
+        }
+        println!("Invalid selection. Please enter a number between 1 and {}.", choices.len());
+    }
+}
+
+fn ask_iris_stops() -> Result<Option<f64>> {
+    let stops_str = ask_line("Camera exposure (iris stops: 0 = normal, +2 = overexposed highlights leave tails)", Some("2.0"))?;
+    let val = stops_str.parse::<f64>().unwrap_or(2.0);
+    Ok(Some(val))
+}
+
+fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()> {
+    println!("=== vhsphys interactive wizard ===");
+    println!("Press Enter at any prompt to accept the [default] value.\n");
+
+    let input_path = loop {
+        let default_in = input_opt.as_ref().map(|p| p.to_string_lossy().to_string());
+        let p = ask_line("Input video file", default_in.as_deref())?;
+        if p.is_empty() {
+            println!("Input file is required.");
+            continue;
+        }
+        let path = PathBuf::from(&p);
+        if path.exists() {
+            break path;
+        }
+        println!("File '{}' not found. Please enter a valid path.", path.display());
+    };
+
+    let default_out = output_opt.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| {
+        let stem = input_path.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+        let ext = input_path.extension().and_then(|s| s.to_str()).unwrap_or("mp4");
+        format!("{stem}_vhs.{ext}")
+    });
+    let out_str = ask_line("Output video file", Some(&default_out))?;
+    let output_path = PathBuf::from(out_str);
+
+    let std_choices = [
+        ("NTSC", "525 lines @ 29.97 fps (North America, Japan)"),
+        ("PAL", "625 lines @ 25.00 fps (Europe, Australia)"),
+        ("PAL-60", "NTSC tape played into a PAL television (60 Hz colour)"),
+    ];
+    let std_idx = ask_choice("Television standard:", &std_choices, 0)?;
+    let standard_arg = match std_idx {
+        0 => StandardArg::Ntsc,
+        1 => StandardArg::Pal,
+        _ => StandardArg::Pal60,
+    };
+    let is_pal625 = matches!(standard_arg, StandardArg::Pal);
+
+    let speed_choices: Vec<(&str, &str)> = if is_pal625 {
+        vec![
+            ("SP", "Standard Play (49 um track, SP playback head)"),
+            ("LP", "Long Play (half speed, 24.5 um track, higher noise/crosstalk)"),
+        ]
+    } else {
+        vec![
+            ("SP", "Standard Play (58 um track pitch, standard speed)"),
+            ("LP", "Long Play (29 um track pitch, slow-speed sub-emphasis)"),
+            ("EP", "Extended Play / SLP (19 um track pitch, highest noise)"),
+        ]
+    };
+    let speed_idx = ask_choice("Tape speed:", &speed_choices, 0)?;
+    let speed_name = speed_choices[speed_idx].0.to_lowercase();
+
+    let preset_choices = [
+        ("worn", "Typical home recording (slight wear, head flutter, mild dropouts)"),
+        ("pristine", "Brand new tape and calibrated studio VCR (clean alignment)"),
+        ("good", "Well-maintained home deck and good quality tape"),
+        ("bad", "Heavily worn tape, clogged head, frequent dropouts, jitter"),
+        ("ruined", "Severe degradation, aged binder, high dropout rate"),
+        ("other", "Choose from full list of environmental and circuit presets"),
+    ];
+    let preset_idx = ask_choice("Condition preset:", &preset_choices, 0)?;
+    let preset_name = if preset_idx == 5 {
+        println!("\nAvailable presets: {}", Condition::preset_names().join(", "));
+        loop {
+            let name = ask_line("Enter preset name", Some("ground-loop"))?;
+            if Condition::preset(name.trim()).is_some() {
+                break name.trim().to_string();
+            }
+            println!("Unknown preset '{}'. Try one of: {}", name, Condition::preset_names().join(", "));
+        }
+    } else {
+        preset_choices[preset_idx].0.to_string()
+    };
+
+    let tube_choices = [
+        ("Off", "Direct video signal (no camera pickup tube stage)"),
+        ("Plumbicon", "Standard tube (XQ1020): target lag and highlight comet tails"),
+        ("Plumbicon+Bias", "Light-bias tube (XQ1410): reduced lag in shadows"),
+        ("Plumbicon+ACT", "Anti-comet-tail gun (XQ1520): lag without persistent tails"),
+    ];
+    let tube_idx = ask_choice("Camera pickup tube simulation:", &tube_choices, 0)?;
+    let (camera_tube_arg, iris_stops) = match tube_idx {
+        1 => (Some(CameraTubeArg::Plumbicon), ask_iris_stops()?),
+        2 => (Some(CameraTubeArg::PlumbiconBias), ask_iris_stops()?),
+        3 => (Some(CameraTubeArg::PlumbiconAct), ask_iris_stops()?),
+        _ => (None, None),
+    };
+
+    let audio_choices = [
+        ("Process", "Simulate linear audio track through tape and deck electronics"),
+        ("Copy", "Copy original audio stream untouched"),
+        ("None", "Mute audio in the output video"),
+    ];
+    let audio_idx = ask_choice("Audio mode:", &audio_choices, 0)?;
+    let audio_arg = match audio_idx {
+        0 => AudioMode::Process,
+        1 => AudioMode::Copy,
+        _ => AudioMode::None,
+    };
+
+    let gen_str = ask_line("Tape dub generations (1 = first recording, 2 = copy of tape)", Some("1"))?;
+    let generations: u8 = gen_str.parse().unwrap_or(1).clamp(1, 8);
+
+    let mut sets = Vec::new();
+    if speed_name != "sp" {
+        sets.push(format!("speed={speed_name}"));
+    }
+
+    let mut cmd_parts = vec!["vhsphys".to_string(), "run".to_string()];
+    cmd_parts.push(input_path.display().to_string());
+    cmd_parts.push(output_path.display().to_string());
+    if standard_arg != StandardArg::Ntsc {
+        cmd_parts.push(format!("--standard {}", match standard_arg {
+            StandardArg::Ntsc => "ntsc",
+            StandardArg::Pal => "pal",
+            StandardArg::Pal60 => "pal60",
+        }));
+    }
+    if preset_name != "worn" {
+        cmd_parts.push(format!("--preset {preset_name}"));
+    }
+    for s in &sets {
+        cmd_parts.push(format!("--set {s}"));
+    }
+    if let Some(tube) = camera_tube_arg {
+        let t_str = match tube {
+            CameraTubeArg::Off => "off",
+            CameraTubeArg::Plumbicon => "plumbicon",
+            CameraTubeArg::PlumbiconBias => "plumbicon-bias",
+            CameraTubeArg::PlumbiconAct => "plumbicon-act",
+        };
+        cmd_parts.push(format!("--camera-tube {t_str}"));
+    }
+    if let Some(stops) = iris_stops {
+        cmd_parts.push(format!("--iris-stops {stops}"));
+    }
+    if audio_arg != AudioMode::Process {
+        let a_str = match audio_arg {
+            AudioMode::Process => "process",
+            AudioMode::Copy => "copy",
+            AudioMode::None => "none",
+        };
+        cmd_parts.push(format!("--audio {a_str}"));
+    }
+    if generations > 1 {
+        cmd_parts.push(format!("--generations {generations}"));
+    }
+
+    let full_cmd = cmd_parts.join(" ");
+    println!("\n{}", "=".repeat(60));
+    println!("Generated command:\n  {}", full_cmd);
+    println!("{}\n", "=".repeat(60));
+
+    let proceed = ask_line("Run this command now? (y/n)", Some("y"))?;
+    if proceed.eq_ignore_ascii_case("y") || proceed.eq_ignore_ascii_case("yes") {
+        println!("\nStarting run...\n");
+        let run_args = RunArgs {
+            input: input_path,
+            output: output_path,
+            preset: preset_name,
+            config: None,
+            sets,
+            standard: Some(standard_arg),
+            seed: 1,
+            generations,
+            audio: audio_arg,
+            camera_tube: camera_tube_arg,
+            iris_stops,
+            start: None,
+            duration: None,
+            frames: None,
+            size: None,
+            crf: 18,
+            threads: None,
+            batch: 8,
+            bypass: false,
+            ffmpeg: "ffmpeg".to_string(),
+            ffprobe: "ffprobe".to_string(),
+        };
+        run(run_args)?;
+    } else {
+        println!("Setup completed. You can run the generated command above when ready.");
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     match Cli::parse().cmd {
         Cmd::Run(a) => run(a),
+        Cmd::Wizard { input, output } => wizard(input, output),
         Cmd::Presets => {
             println!("Condition presets (use with --preset):\n");
             let width = Condition::preset_names().iter().map(|n| n.len()).max().unwrap_or(0);
@@ -750,5 +997,25 @@ mod tests {
         assert!(Pal625::generations("worn", "standard = \"pal\"\n[composite]\nenabled = true\n", 1, 1, "").is_ok());
         assert!(Ntsc525::generations("worn", "standard = \"pal60\"\n", 1, 1, "").is_ok());
         assert!(Ntsc525::generations("worn", "standard = \"pal\"\n", 1, 1, "").is_err());
+    }
+
+    #[test]
+    fn wizard_subcommand_parses_arguments() {
+        let cli = Cli::try_parse_from(["vhsphys", "wizard"]).unwrap();
+        match cli.cmd {
+            Cmd::Wizard { input, output } => {
+                assert!(input.is_none());
+                assert!(output.is_none());
+            }
+            _ => panic!("expected Wizard command"),
+        }
+        let cli2 = Cli::try_parse_from(["vhsphys", "wizard", "in.mp4", "out.mp4"]).unwrap();
+        match cli2.cmd {
+            Cmd::Wizard { input, output } => {
+                assert_eq!(input, Some(PathBuf::from("in.mp4")));
+                assert_eq!(output, Some(PathBuf::from("out.mp4")));
+            }
+            _ => panic!("expected Wizard command"),
+        }
     }
 }
