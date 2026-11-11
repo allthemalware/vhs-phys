@@ -28,4 +28,6 @@ pub mod tape;
 pub mod tracking;
 pub mod record;
 pub mod rng;
+pub mod standard;
+pub mod tube;
 pub mod video;
