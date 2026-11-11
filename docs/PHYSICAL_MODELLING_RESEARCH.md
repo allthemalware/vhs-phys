@@ -24,7 +24,9 @@ Chow's formulation.
 
 ## 2. Roadmap
 
-Ordered roughly by how much of the picture each would change.
+Physics not yet implemented in `vhs-phys`, ordered roughly by how much of the picture
+each would change. For broader project goals (tooling, plugins, GPU architecture, format support),
+see `docs/ROADMAP.md`.
 
 ### 2.1 Non-linear noise reduction (HQ decks, SP only)
 
