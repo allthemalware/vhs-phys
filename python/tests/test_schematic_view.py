@@ -1002,3 +1002,24 @@ def test_a_frame_has_a_time_budget(view):
     moving = _best_ms(tick)
     assert still <= 5.0, f"a repaint of a scene that did not change took {still:.1f} ms (budget 5 ms): cache it"
     assert moving <= 8.0, f"a repaint with the pulses and reels moving took {moving:.1f} ms (budget 8 ms): redraw only what moves"
+
+
+def test_the_labels_follow_the_standard(view):
+    """The spec labels say what the chosen standard records: lines, frame rate, FM band."""
+    view.set_value("standard", "ntsc")
+    ntsc = " / ".join(view.visible_labels())
+    view.set_value("standard", "pal")
+    pal = " / ".join(view.visible_labels())
+    assert "525" in ntsc and "3.4-4.4" in ntsc and "625" not in ntsc
+    assert "625" in pal and "3.8-4.8" in pal and "525" not in pal
+    view.set_value("standard", "pal60")
+    assert "525" in " / ".join(view.visible_labels())
+
+
+def test_a_label_change_reaches_the_picture(view):
+    view.set_value("standard", "ntsc")
+    a = rgb(view.render_to_image(CW))
+    view.set_value("standard", "pal")
+    b = rgb(view.render_to_image(CW))
+    assert np.abs(a - b).sum() > 0, "the standard's labels are drawn"
+

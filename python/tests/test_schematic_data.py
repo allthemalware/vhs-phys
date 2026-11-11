@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from vhsgui.model import AUDIO_MODES, CONDITION_FIELDS, MAX_GENERATIONS, SIGNALS
+from vhsgui.model import AUDIO_MODES, CAMERA_TUBES, CONDITION_FIELDS, IRIS_STOPS_RANGE, MAX_GENERATIONS, SIGNALS, STANDARDS
 
 DATA = Path(__file__).resolve().parents[1] / "vhsgui" / "schematic"
 PAGE_DIRS = {"circuit": DATA, "outside": DATA / "outside"}
@@ -24,17 +24,18 @@ GLYPHS = json.loads((DATA / "glyphs.json").read_text())["glyphs"]
 ROW_H = 18  # a control row: 16 px of text plus its gauge line
 ADVANCE = 0.602  # advance of a monospace character in em (DejaVu Sans Mono 0.602; Hack, JetBrains Mono 0.600)
 MARGIN = 4
-LOOK_IDS = {"preset", "seed", "generations", "signal", "audio"}
+LOOK_IDS = {"preset", "seed", "generations", "signal", "audio", "standard", "camera_tube", "iris_stops"}
 BLOCKS_OF_PAGE = {
     "circuit": {
         "source": ["preset", "seed"],
+        "camera": ["camera_tube", "iris_stops"],
         "record_deck": ["rec_deck_age_years", "rec_deck_temp_c", "generations"],
         "cassette": ["tape_age_years", "tape_storage", "tape_quality", "tape_passes", "tape_speed", "tape_stretch", "tape_position_m"],
         "head_drum": ["head_wear", "head_clog", "drum_wear"],
         "transport": ["tracking_error_um", "tracking_slope_um", "tension_error"],
         "power": ["deck_age_years", "deck_temp_c", "deck_humidity", "psu_smps"],
         "output": ["signal", "audio"],
-        "tv": [],
+        "tv": ["standard"],
     },
     "outside": {
         "phone": ["phone_mode", "phone_distance_cm"],
@@ -67,7 +68,16 @@ def page(request):
     BLOCKS = {b["id"]: b for b in LAYOUT["blocks"]}
     CONTROLS = {c["id"]: c for c in LAYOUT["controls"]}
     BLOCK_OF = BLOCKS_OF_PAGE[request.param]
+    global PAGE
+    PAGE = request.param
     return request.param
+
+
+PAGE = "circuit"
+
+
+def page_name():
+    return PAGE
 
 
 def rect_of(o, h=None):
@@ -138,6 +148,39 @@ def test_the_controls_describe_the_same_ranges_as_the_window(page):
     assert CONTROLS["signal"]["kind"] == "choice" and CONTROLS["signal"]["choices"] == list(SIGNALS)
     assert CONTROLS["audio"]["kind"] == "choice" and CONTROLS["audio"]["choices"] == list(AUDIO_MODES)
     assert CONTROLS["preset"]["kind"] == "choice" and {"pristine", "worn", "ruined"} <= set(CONTROLS["preset"]["choices"])
+    assert CONTROLS["standard"]["kind"] == "choice" and CONTROLS["standard"]["choices"] == list(STANDARDS)
+    assert CONTROLS["camera_tube"]["kind"] == "choice" and CONTROLS["camera_tube"]["choices"] == list(CAMERA_TUBES)
+    iris = CONTROLS["iris_stops"]
+    assert iris["kind"] == "slider" and (iris["min"], iris["max"]) == IRIS_STOPS_RANGE and math.isclose(iris["step"], 0.5)
+
+
+def test_labels_that_depend_on_a_setting_name_a_real_one():
+    """A label may carry `when: {control: [values]}`: it is shown only while that control has one of the values.
+    The circuit page says what the standard changes: lines and frame rate, the FM band, the drum, the tape speeds."""
+    for t in LAYOUT.get("labels", []):
+        when = t.get("when")
+        if when is None:
+            continue
+        assert isinstance(when, dict) and len(when) == 1, t["text"]
+        (cid, values), = when.items()
+        assert cid in CONTROLS and CONTROLS[cid]["kind"] == "choice", t["text"]
+        assert values and set(values) <= set(CONTROLS[cid]["choices"]), t["text"]
+    if page_name() != "circuit":
+        return
+    for std, must in {"ntsc": ["525", "3.4-4.4"], "pal": ["625", "3.8-4.8"], "pal60": ["525", "PAL"]}.items():
+        shown = " / ".join(t["text"] for t in LAYOUT["labels"] if _shown(t, {"standard": std}))
+        for word in must:
+            assert word in shown, f"{std}: no label says {word!r} ({shown})"
+    pal = " / ".join(t["text"] for t in LAYOUT["labels"] if _shown(t, {"standard": "pal"}))
+    assert "525" not in pal and "29.97" not in pal and "3.4-4.4" not in pal, pal
+
+
+def _shown(label, values):
+    when = label.get("when")
+    if not when:
+        return True
+    (cid, allowed), = when.items()
+    return values.get(cid, CONTROLS[cid]["choices"][0]) in allowed
 
 
 def test_everything_fits_on_the_canvas():
@@ -259,6 +302,7 @@ def test_the_signal_flow_reads_from_left_to_right(page):
     cx = {k: b["x"] + b["w"] / 2 for k, b in BLOCKS.items()}
     if page == "circuit":
         assert cx["source"] < cx["cassette"] and cx["record_deck"] < cx["cassette"] < cx["head_drum"] <= cx["power"] < cx["tv"]
+        assert cx["camera"] < cx["cassette"], "the camera feeds the recorder: it sits on the left with the source"
         assert cx["output"] < cx["tv"]
     assert all(cx[k] < cx["tv"] for k in cx if k != "tv"), "the TV is the right-most block, where the picture arrives"
 
@@ -299,8 +343,9 @@ def _box(x, baseline, s, size, align="l"):
     return (left, baseline - 0.8 * size, width, size)
 
 
-def _text_items():
-    """Everything the engine prints, as (name, box, brightness tier, effective size). The engine puts a block's
+def _text_items(values=None):
+    """Everything the engine prints while the label conditions see `values` (by default every label: the
+    overlap test passes the values of each standard in turn), as (name, box, brightness tier, effective size). The engine puts a block's
     title at (x + 8, y + 15) at the theme size in the norm tier, its caption at (x + 8, y + h - 7) one pixel
     smaller in the dim tier, and a wire's label at `label_at` at the theme size in the norm tier."""
     fs = LAYOUT["theme"]["font"]["size"]
@@ -316,6 +361,8 @@ def _text_items():
         if w["label"]:
             items.append((f"wire {w['id']} label {w['label']!r}", _box(w["label_at"][0], w["label_at"][1], w["label"], fs), "norm", fs))
     for t in LAYOUT.get("labels", []):
+        if values is not None and not _shown(t, values):
+            continue
         items.append((f"label {t['text']!r}", _box(t["x"], t["y"], t["text"], t["size"], t.get("align", "l")), t.get("b", "norm"), t["size"]))
     for i in LAYOUT["instances"]:
         for p in GLYPHS[i["glyph"]]["prims"]:
@@ -351,8 +398,9 @@ def test_captions_fit_inside_their_block():
     assert not problems, "\n".join(problems)
 
 
-def test_no_two_pieces_of_text_overlap():
-    items = [(n, b) for n, b, _, _ in _text_items()] + [(f"the row of {c['id']}", rect_of(c, ROW_H)) for c in LAYOUT["controls"]]
+@pytest.mark.parametrize("standard", STANDARDS)
+def test_no_two_pieces_of_text_overlap(standard):
+    items = [(n, b) for n, b, _, _ in _text_items({"standard": standard})] + [(f"the row of {c['id']}", rect_of(c, ROW_H)) for c in LAYOUT["controls"]]
     h = LAYOUT["hint"]
     items.append(("the hint band", (h["x"], h["y"] - h["size"], h["w"], h["size"] + 5)))
     problems = [f"{na} overlaps {nb}" for i, (na, a) in enumerate(items) for nb, b in items[i + 1 :] if overlap(a, b)]

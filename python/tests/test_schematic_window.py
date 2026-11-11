@@ -162,7 +162,8 @@ def on_grid(spec, fraction):
 def shown_look(window):
     """The schematic's idea of the look, as the window's own look() would say it."""
     look = window.look()
-    return {**look.condition, "preset": look.preset, "seed": look.seed, "generations": look.generations, "signal": look.signal, "audio": look.audio}
+    return {**look.condition, "preset": look.preset, "seed": look.seed, "generations": look.generations, "signal": look.signal, "audio": look.audio,
+            "standard": look.standard, "camera_tube": look.camera_tube, "iris_stops": look.iris_stops}
 
 
 def views(window):
@@ -423,7 +424,7 @@ def test_every_line_has_a_help_text_from_the_window(app, window):
         v = show_page_of(app, window, spec.key)
         hover(v, v.control_rect(spec.key).center())
         assert v.hint_text() == spec.help, spec.key
-    for cid in ("preset", "seed", "generations", "signal", "audio"):
+    for cid in ("preset", "seed", "generations", "signal", "audio", "standard", "camera_tube", "iris_stops"):
         hover(view, view.control_rect(cid).center())
         assert view.hint_text() not in ("", default), cid
 
@@ -565,4 +566,21 @@ def test_the_module_can_start_on_the_outside_page(binary, tmp_path):
     assert ((g > 120) & (g > 1.6 * r) & (g > 1.3 * b)).mean() > 0.01
     assert _run_module("--page", "outside", "--screenshot", str(tmp_path / "y.png")).returncode == 0, "the schematic is the default, so --page alone is enough"
     assert _run_module("--panels", "--page", "outside", "--screenshot", str(tmp_path / "x.png")).returncode != 0, "a page with --panels makes no sense"
+
+
+def test_the_standard_and_the_camera_drive_and_follow_the_editors(app, window):
+    view = to_schematic(app, window)
+    window.resize(1280, 900)
+    app.processEvents()
+    std = child(window, QComboBox, "field_standard")
+    tube = child(window, QComboBox, "field_camera_tube")
+    click(view, at(view, "standard"))
+    assert std.currentData() == "pal" and window.look().standard == "pal"
+    click(view, at(view, "camera_tube"))
+    assert tube.currentData() == "plumbicon"
+    std.setCurrentIndex(std.findData("pal60"))
+    tube.setCurrentIndex(tube.findData("plumbicon-act"))
+    app.processEvents()
+    assert view.value("standard") == "pal60" and view.value("camera_tube") == "plumbicon-act"
+    assert_mirrors(window)
 

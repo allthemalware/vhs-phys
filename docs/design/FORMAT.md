@@ -45,7 +45,7 @@ the default is `{"w": "thin", "b": "norm", "fill": "none"}`.
   "blocks": [{"id": "head_drum", "title": "HEAD DRUM", "x": 500, "y": 20, "w": 220, "h": 110, "frame": "box", "caption": ""}],
   "instances": [{"glyph": "drum", "x": 520, "y": 40, "scale": 1.0, "block": "head_drum"}],
   "wires": [{"id": "w1", "kind": "video", "points": [[250, 60], [300, 60]], "label": "", "label_at": [0, 0], "arrow": true}],
-  "labels": [{"text": "NTSC 525", "x": 20, "y": 600, "size": 11, "align": "l", "b": "dim"}],
+  "labels": [{"text": "NTSC 525", "x": 20, "y": 600, "size": 11, "align": "l", "b": "dim", "when": {"standard": ["ntsc"]}}],
   "hint": {"x": 20, "y": 606, "w": 1140, "size": 12, "default": "HOVER A LINE. DRAG TO SET. WHEEL TO STEP. DOUBLE CLICK TO RESET."},
   "controls": [{"id": "head_wear", "block": "head_drum", "label": "HEAD WEAR", "kind": "slider",
                 "x": 512, "y": 60, "w": 196, "unit": "", "min": 0, "max": 1, "step": 0.01, "decimals": 2}],
@@ -67,16 +67,21 @@ the default is `{"w": "thin", "b": "norm", "fill": "none"}`.
 | block | controls |
 |---|---|
 | `source` | `preset` (choice), `seed` (stepper) |
+| `camera` | `camera_tube` (choice off, plumbicon, plumbicon-bias, plumbicon-act), `iris_stops` (slider -2..6, step 0.5) |
 | `record_deck` | `rec_deck_age_years`, `rec_deck_temp_c`, `generations` (stepper 1..8) |
 | `cassette` | `tape_age_years`, `tape_storage`, `tape_quality`, `tape_passes`, `tape_speed` (choice sp, lp, ep), `tape_stretch`, `tape_position_m` |
 | `head_drum` | `head_wear`, `head_clog`, `drum_wear` |
 | `transport` | `tracking_error_um`, `tracking_slope_um`, `tension_error` |
 | `power` | `deck_age_years`, `deck_temp_c`, `deck_humidity`, `psu_smps` (toggle), `mains_hz`, `mains_sag` |
 | `output` | `signal` (choice svideo, notch, comb1h, comb2h), `audio` (choice process, copy, none) |
-| `tv` | none: the TV shows the picture (a glyph with a `screen`) |
+| `tv` | `standard` (choice ntsc, pal, pal60); the TV shows the picture (a glyph with a `screen`) |
 
   The numeric ranges, steps and choices of the condition controls are those of
-  `python/vhsgui/model.py` (`CONDITION_FIELDS`); a test keeps the two in step.
+  `python/vhsgui/model.py` (`CONDITION_FIELDS`); a test keeps the two in step. The choices of `standard` and
+  `camera_tube` and the range of `iris_stops` are `STANDARDS`, `CAMERA_TUBES` and `IRIS_STOPS_RANGE` there.
+- `labels.when` (optional): `{control_id: [values]}`, one choice control of the same page. The label is drawn only
+  while that control has one of the values, so labels for different values may share a place. The circuit page
+  uses it to print the figures of the chosen standard (lines and frame rate, FM band, colour-under, drum, tape speeds).
 - `hint`: one line of text (baseline at `y`, at most `w` wide) in which the engine prints the explanation of the
   line under the pointer, or `default` when there is none. Nothing else may be drawn in that band.
 - `font.family` is one name or a list of names tried in order (the last should be the generic `monospace`);
