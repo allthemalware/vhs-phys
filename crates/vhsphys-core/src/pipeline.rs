@@ -10,6 +10,7 @@
 //! Intermediate results are cached per field and evicted when no longer needed.
 
 use serde::{Deserialize, Serialize};
+use crate::automation::AutomationSchedule;
 use super::audio::AudioParams;
 use super::camera::{CameraParams, CameraTube};
 use super::composite::CompositeParams;
@@ -147,10 +148,34 @@ fn track_window(n: i64) -> (i64, usize) {
 /// neighbouring tracks the head partly overlaps (azimuth crosstalk), with
 /// timebase warp, head-to-tape spacing and oxide defects applied, then the
 /// head amplifier noise and resonance.
-fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64) -> Vec<f32> {
+fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64, auto: Option<&AutomationSchedule>) -> Vec<f32> {
     let p = &cx.p;
     let (g0, len) = track_window(n);
-    let hp = &p.heads[n.rem_euclid(2) as usize];
+    let mut hp = p.heads[n.rem_euclid(2) as usize].clone();
+    let mut tracking = p.tracking.clone();
+
+    if let Some(schedule) = auto {
+        let frame_pos = n as f64 / 2.0;
+        if let Some(off) = schedule.tracking_offset(frame_pos) {
+            tracking.offset_um += off;
+        }
+        if let Some(wander) = schedule.eval("tracking_wander_um", frame_pos) {
+            tracking.wander_um += wander;
+        }
+        if let Some(sp) = schedule.head_spacing(frame_pos) {
+            hp.extra_spacing_um += sp;
+        }
+        if let Some(gain_mod) = schedule.eval("head_gain", frame_pos) {
+            hp.gain *= gain_mod;
+        }
+        if let Some(dh0) = schedule.eval("h0_um", frame_pos) {
+            hp.h0_um += dh0;
+        }
+        if let Some(az) = schedule.eval("azimuth_error_deg", frame_pos) {
+            hp.azimuth_error_deg += az;
+        }
+    }
+
     let mut ctl = Controls::new(len);
     cx.mech.fill_warp(n, g0, &mut ctl);
     cx.tape.paint(n, g0, hp.width_um, &mut ctl);
@@ -159,7 +184,7 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64) -> Ve
             *v += hp.extra_spacing_um as f32;
         }
     }
-    let w = lateral_weights(&p.tracking, p.speed, hp.width_um, p.seed, n, len, g0);
+    let w = lateral_weights(&tracking, p.speed, hp.width_um, p.seed, n, len, g0);
     let h0 = hp.h0_samples();
     let mut buf = vec![0.0f32; len];
     render_pulses(&trans[&n], 0.0, &ctl, Some(&w[2]), h0, &mut buf);
@@ -205,7 +230,7 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64) -> Ve
         }
     }
     let mut rng = Rng::new(p.seed, STREAM_HEAD, n);
-    head_front_end(&mut buf, hp, &mut rng);
+    head_front_end(&mut buf, &hp, &mut rng);
     if itf.rf_on() {
         // What the head leads pick up is compared with the nominal, unworn head signal: a worn
         // head sees relatively more of it.
@@ -281,7 +306,7 @@ pub fn calibrate(p: &Params) -> Calibration {
     let tr = record_track(&src, &clean.record, (n % 2) as usize, g0, len);
     let mut trans = HashMap::new();
     trans.insert(n, Arc::new(tr));
-    let mut rf = render_rf(&cx, &trans, n);
+    let mut rf = render_rf(&cx, &trans, n, None);
     // equaliser, then measure the carrier amplitude on the black active area
     let mut x = rf.clone();
     for &(f, q, g) in &clean.deck.eq_peaks {
@@ -342,6 +367,8 @@ pub struct Session {
     /// part-way into a clip with the tube on needs a pre-roll of frames before its first
     /// output frame to match a render of the whole clip.
     camera: Option<CameraTube>,
+    /// Optional parameter automation schedule for time-varying curves.
+    pub automation: Option<Arc<AutomationSchedule>>,
     frames: VecDeque<Arc<Baseband>>,
     first_idx: i64,
     pushed: i64,
@@ -375,6 +402,7 @@ impl Session {
             cx,
             cal,
             camera,
+            automation: None,
             frames: VecDeque::new(),
             first_idx: start,
             pushed: start,
@@ -386,8 +414,24 @@ impl Session {
         }
     }
 
+    pub fn set_automation(&mut self, schedule: Option<AutomationSchedule>) {
+        self.automation = schedule.map(Arc::new);
+    }
+
+    pub fn with_automation(mut self, schedule: AutomationSchedule) -> Self {
+        self.set_automation(Some(schedule));
+        self
+    }
+
     /// Queue an input frame (must be ACTIVE_W x ACTIVE_H RGB).
     pub fn push(&mut self, f: &Frame) {
+        if let Some(auto) = &self.automation {
+            if let Some(d_iris) = auto.iris_stops(self.pushed as f64) {
+                if let Some(cam) = self.camera.as_mut() {
+                    cam.set_iris_stops(self.params.camera.iris_stops + d_iris);
+                }
+            }
+        }
         let bb = match self.camera.as_mut() {
             Some(camera) => encode_frame(&camera.process_frame(f)),
             None => encode_frame(f),
@@ -451,7 +495,8 @@ impl Session {
         // 2. playback head RF for n in [2k0-1, 2k1+1]
         let need: Vec<i64> = (2 * k0 - 1..=2 * k1 + 1).filter(|n| !self.rf.contains_key(n)).collect();
         let trans = &self.trans;
-        let made: Vec<(i64, Arc<Vec<f32>>)> = need.par_iter().map(|&n| (n, Arc::new(render_rf(cx, trans, n)))).collect();
+        let auto = self.automation.clone();
+        let made: Vec<(i64, Arc<Vec<f32>>)> = need.par_iter().map(|&n| (n, Arc::new(render_rf(cx, trans, n, auto.as_deref())))).collect();
         self.rf.extend(made);
 
         // 3. deck segments for n in [2k0, 2k1]
@@ -504,7 +549,7 @@ impl Session {
             trans.insert(m, Arc::new(record_track(&src, &p.record, m.rem_euclid(2) as usize, g0, len)));
         }
         for m in n - 1..=n + 1 {
-            rf.insert(m, Arc::new(render_rf(cx, &trans, m)));
+            rf.insert(m, Arc::new(render_rf(cx, &trans, m, self.automation.as_deref())));
         }
         let seg = segment(p, &rf, n);
         let (g0, _) = track_window(n);
@@ -527,6 +572,23 @@ impl Session {
         }
         out
     }
+
+    /// Convenience: run a whole clip through one session with dynamic parameter automation.
+    pub fn run_with_automation(params: Params, input: &[Frame], automation: AutomationSchedule) -> Vec<Frame> {
+        let mut s = Session::new(params).with_automation(automation);
+        let mut out = Vec::new();
+        for f in input {
+            s.push(f);
+            while s.ready() > 0 {
+                out.extend(s.process(4));
+            }
+        }
+        s.finish();
+        while s.ready() > 0 {
+            out.extend(s.process(4));
+        }
+        out
+    }
 }
 
 /// A chain of decks: each generation re-records the previous generation's playback, the
@@ -534,6 +596,7 @@ impl Session {
 /// picture the stage before it played back. One stage is exactly a plain `Session`.
 pub struct Chain {
     stages: Vec<Session>,
+    pub automation: Option<Arc<AutomationSchedule>>,
 }
 
 impl Chain {
@@ -545,7 +608,23 @@ impl Chain {
     /// Every generation starts at the same absolute frame, so a dub lines up with its source.
     pub fn with_start(stages: Vec<Params>, start: i64) -> Self {
         assert!(!stages.is_empty(), "a chain needs at least one generation");
-        Self { stages: stages.into_iter().map(|p| Session::with_start(p, start)).collect() }
+        Self {
+            stages: stages.into_iter().map(|p| Session::with_start(p, start)).collect(),
+            automation: None,
+        }
+    }
+
+    pub fn set_automation(&mut self, schedule: Option<AutomationSchedule>) {
+        let arc = schedule.map(Arc::new);
+        self.automation = arc.clone();
+        for s in &mut self.stages {
+            s.automation = arc.clone();
+        }
+    }
+
+    pub fn with_automation(mut self, schedule: AutomationSchedule) -> Self {
+        self.set_automation(Some(schedule));
+        self
     }
 
     pub fn push(&mut self, f: &Frame) {
@@ -597,6 +676,23 @@ impl Chain {
     /// Convenience: run a whole clip through every generation.
     pub fn run(stages: Vec<Params>, input: &[Frame]) -> Vec<Frame> {
         let mut c = Chain::new(stages);
+        let mut out = Vec::new();
+        for f in input {
+            c.push(f);
+            while c.ready() > 0 {
+                out.extend(c.process(4));
+            }
+        }
+        c.finish();
+        while c.ready() > 0 {
+            out.extend(c.process(4));
+        }
+        out
+    }
+
+    /// Convenience: run a whole clip through every generation with dynamic parameter automation.
+    pub fn run_with_automation(stages: Vec<Params>, input: &[Frame], automation: AutomationSchedule) -> Vec<Frame> {
+        let mut c = Chain::new(stages).with_automation(automation);
         let mut out = Vec::new();
         for f in input {
             c.push(f);

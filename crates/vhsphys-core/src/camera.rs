@@ -76,6 +76,16 @@ impl CameraTube {
         Some(Self { channels, black, photo, charge })
     }
 
+    /// Update the iris exposure setting for subsequent frames.
+    pub fn set_iris_stops(&mut self, iris_stops: f64) {
+        let exposure = iris_stops.exp2();
+        for k in 0..3 {
+            for (v, p) in self.photo[k].iter_mut().enumerate() {
+                *p = photo_current(&self.channels[k], oetf_inverse(v as f64 / 255.0) * exposure);
+            }
+        }
+    }
+
     /// Expose the targets to `frame` for one frame time, scan them, and return what the
     /// camera outputs. The charge left on the targets is kept for the next frame.
     pub fn process_frame(&mut self, frame: &Frame) -> Frame {

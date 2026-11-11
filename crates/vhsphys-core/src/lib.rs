@@ -15,6 +15,7 @@
 //! and `tube`.
 
 // Shared by both engines: nothing in them depends on the raster.
+pub mod automation;
 pub mod dsp;
 pub mod frame;
 pub mod interference_params;

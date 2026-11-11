@@ -236,6 +236,9 @@ struct RunArgs {
     /// Skip the tape/deck model: only encode to the standard's raster and decode again (framing check).
     #[arg(long)]
     bypass: bool,
+    /// JSON, TOML or CSV file with time-varying parameter automation curves (e.g. tracking offset drift, head clogging, iris exposure).
+    #[arg(long, value_name = "FILE")]
+    automate: Option<PathBuf>,
     /// The ffmpeg program to run.
     #[arg(long, default_value = "ffmpeg")]
     ffmpeg: String,
@@ -330,6 +333,7 @@ trait Playback {
     fn finish_input(&mut self);
     fn frames_ready(&self) -> i64;
     fn play(&mut self, max_frames: usize) -> Vec<Frame>;
+    fn set_automation(&mut self, schedule: Option<vhsphys_core::automation::AutomationSchedule>);
 }
 
 /// The processed sound, in a temporary WAV file that goes away with this value.
@@ -396,6 +400,9 @@ macro_rules! engine {
             }
             fn play(&mut self, max_frames: usize) -> Vec<Frame> {
                 self.process(max_frames)
+            }
+            fn set_automation(&mut self, schedule: Option<vhsphys_core::automation::AutomationSchedule>) {
+                self.set_automation(schedule);
             }
         }
     };
@@ -576,7 +583,17 @@ fn run_engine<E: Engine>(a: RunArgs, standard: TvStandard, text: &str, sets: &st
 
     let standard_note = if standard == TvStandard::Ntsc { String::new() } else { format!(" standard {}", standard.name()) };
     eprintln!("preset '{}' seed {}{}  {}x{} -> {}x{}  ({})", a.preset, a.seed, standard_note, iw, ih, ow, oh, a.output.display());
-    let mut session = if a.bypass { None } else { Some(E::chain(stages, start_frame)) };
+    let mut session = if a.bypass {
+        None
+    } else {
+        let mut chain = E::chain(stages, start_frame);
+        if let Some(path) = &a.automate {
+            let auto = vhsphys_core::automation::AutomationSchedule::from_file(path)
+                .map_err(|e| anyhow::anyhow!("loading automation file '{}': {e}", path.display()))?;
+            chain.set_automation(Some(auto));
+        }
+        Some(chain)
+    };
     let t0 = Instant::now();
     let (mut n_in, mut n_out) = (0usize, 0usize);
     let limit = a.frames.unwrap_or(usize::MAX);
@@ -869,6 +886,7 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
             threads: None,
             batch: 8,
             bypass: false,
+            automate: None,
             ffmpeg: "ffmpeg".to_string(),
             ffprobe: "ffprobe".to_string(),
         };

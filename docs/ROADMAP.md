@@ -28,8 +28,8 @@ Physical tape, deck, and circuit features planned for implementation in `vhsphys
 Tooling, workflow integration, and usability improvements:
 
 - **Parameter automation in standalone application and plugin preparation**:
-  - Time-varying parameter curves (JSON/CSV keyframing or timeline automation) for the standalone app and CLI to model dynamic tracking drift, progressive head clogging, crinkles, and tension changes over time.
-  - Per-frame parameter updating in `pipeline::Session` to prepare for host automation lanes.
+  - Time-varying parameter curves (JSON/TOML/CSV keyframing or timeline automation) for the standalone app and CLI to model dynamic tracking drift, progressive head clogging, crinkles, and camera iris exposure changes over time. *(Completed)*
+  - Per-frame and per-field parameter updating in `pipeline::Session` and `Chain` (`--automate <FILE>`). *(Completed)*
 - **Cleaner user interface (PySide6 GUI and tools)**:
   - Streamlined controls, grouping deck vs. transport vs. tape physical parameters.
   - Dark dock layout for schematic mode, improved preset browsing, and real-time parameter validation.
