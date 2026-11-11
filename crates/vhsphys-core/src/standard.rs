@@ -60,7 +60,9 @@ pub enum ColourTv {
 /// un-switched). `cur_switched` is true when the V axis of this line is inverted. The
 /// decoder adds the two lines to separate U and subtracts them to separate V:
 ///
-///     U = Re(cur + prev) / 2,   V = s * Im(cur - prev) / 2,   s = -1 if cur_switched else 1
+/// ```text
+/// U = Re(cur + prev) / 2,   V = s * Im(cur - prev) / 2,   s = -1 if cur_switched else 1
+/// ```
 ///
 /// A phase error `phi` common to both lines then scales U and V by `cos(phi)` and leaves
 /// the hue alone. Returns `[U, V]`.
