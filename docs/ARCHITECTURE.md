@@ -57,16 +57,16 @@ inside engine files that assert 525-line figures return early in the other engin
 | `dsp` | biquads, Butterworth, first-order emphasis sections, Kaiser FIR, cubic resampling |
 | `rng` | seeded, order-independent random numbers (hash of seed/stream/index) |
 | `video` | the raster of the engine's standard including vsync structure; RGB <-> YUV; encode/decode helpers |
-| `record` | record deck chain and the saturating tape relay; produces `Transition`s |
+| `record` | record deck chain (with the PAL V switch) and the saturating tape relay; produces `Transition`s |
 | `emphasis` | the LP/EP sub-preemphasis (a level-dependent high-frequency boost, table 4 of ST 32) and its exact inverse on playback |
 | `tape` | defect map in tape coordinates, spacing roughness, creases, edge profile |
 | `tracking` | lateral head position and the weights of the tracks under the head |
 | `mech` | timebase error: drift, drum, tape-path resonance, stick-slip, per-line, flagging |
 | `head` | Lorentzian pulse rendering, azimuth smoothing, head amplifier noise, resonance |
 | `electronics` | playback chain: equaliser, AGC, dropout compensator, discriminator, de-emphasis |
-| `decode` | sync separator, AFC, clamp, colour demodulation, comb |
+| `decode` | sync separator, AFC, clamp, colour demodulation, the deck's comb (1H, 2H at 625 lines), the television's colour decoding (NTSC, or PAL with or without the delay line) |
 | `condition` | ageing laws: years/temperature/humidity -> component values -> parameters |
-| `config` | TOML merging, `--set` overrides |
+| `config` | TOML merging, `--set` overrides, refusing what the engine cannot play (another standard, EP at 625 lines) |
 | `pipeline` | streaming session, calibration, per-field scheduling and caching |
 | `format` | tape speed geometry: SP/LP/EP track pitch, angle, advance |
 | `composite` | Y/C sum and separation, notch and combs |
@@ -177,8 +177,11 @@ To preview an excerpt, the backend runs the CLI with `--start` beginning a few f
   the physical effect enters (usually a `Controls` array in `render_rf`, or a
   stage in `electronics::process_segment`), and map a `Condition` field to them
   in `condition.rs`. Serde derives expose them to TOML automatically.
-* PAL: the constants are in `consts_pal.rs` and the vertical interval is built from them; the
-  per-line V-switch in `video`/`record`/`decode` and the colour-under 626.953 kHz carrier
-  (`CU_CYCLES_PER_LINE`) are still to come in the `pal` engine.
+* PAL: the `pal` engine records and plays 625-line PAL (`PAL.md`). Standard-specific behaviour is
+  chosen by `consts::STANDARD` or follows from a constant: the burst angle (`video`), the V switch
+  and the eighth-of-a-turn carrier rotation (`record::v_switched`, `record::line_rotation`), the
+  deck's burst reference and 2H comb and the television (`decode`), the slow-speed rules
+  (`ST32_SLOW_SPEED_RULES`), EP (`HAS_EP`) and the mains (`MAINS_HZ_DEFAULT`). PAL-60 and
+  composite PAL are still to come.
 * S-VHS: FM 5.4-7.0 MHz, 1.6 MHz deviation, extra sub-emphasis, a higher RF
   sample rate.
