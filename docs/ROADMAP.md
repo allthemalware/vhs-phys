@@ -34,9 +34,9 @@ Tooling, workflow integration, and usability improvements:
   - Streamlined controls, grouping deck vs. transport vs. tape physical parameters.
   - Dark dock layout for schematic mode, improved preset browsing, and real-time parameter validation.
 - **Walkthrough shell version (interactive CLI wizard)**:
-  - Interactive terminal wizard (`vhsphys wizard`) stepping users through video input/output, speed (SP/LP/EP), standard (NTSC/PAL/PAL-60), tape condition, camera tube, and generation count to eliminate verbose command lines.
+  - Interactive terminal wizard (`vhsphys wizard`) stepping users through video input/output, speed (SP/LP/EP), standard (NTSC/PAL/PAL-60), tape condition, camera tube, and generation count to eliminate verbose command lines. *(Completed)*
 - **Separate viewing window**:
-  - Detachable / floating preview viewport (`QDockWidget` or dedicated auxiliary display window) designed for multi-monitor setups.
+  - Detachable / floating preview viewport (`DetachedPreviewWindow` with Dock/Pop-out controls) designed for multi-monitor setups. *(Completed)*
 - **Ko-fi button and retro easter eggs**:
   - Project funding/support links in the GUI About dialog and documentation.
   - Period-authentic deck easter eggs (e.g. simulated "DEW DETECTED" shutdown, tape eject jam, retro blue screen / OSD counter modes).
