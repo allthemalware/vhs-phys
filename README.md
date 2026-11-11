@@ -402,6 +402,4 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for full notes and physics references.
 
 ## Support
 
-[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/T5F122USRI)
-
-<script type='text/javascript' src='https://storage.ko-fi.com/cdn/widget/Widget_2.js'></script><script type='text/javascript'>kofiwidget2.init('Keep the chaos coming', '#699c82', 'T5F122USRI');kofiwidget2.draw();</script>
+[![Keep the chaos coming](https://img.shields.io/badge/Keep%20the%20chaos%20coming-699c82?style=for-the-badge&logo=kofi&logoColor=white)](https://ko-fi.com/T5F122USRI)
