@@ -121,6 +121,14 @@ pub fn v_switched(line: i64) -> bool {
     STANDARD == TvStandard::Pal && line.rem_euclid(2) == 1
 }
 
+/// Whether a multi-standard deck inverts V on `line` (global line index) of its 4.43 MHz output
+/// when it plays an NTSC tape into a PAL television (PAL-60). The tape itself is not switched
+/// (`v_switched` stays false at 525 lines): the deck does it after its own colour processing,
+/// on every odd line, so an NTSC tape's phase error comes off the deck mirrored with V.
+pub fn pal60_switched(line: i64) -> bool {
+    line.rem_euclid(2) == 1
+}
+
 /// Source of baseband video: concatenated frames addressed by baseband sample
 /// index. Out-of-range regions are blank (sync, no picture).
 pub trait VideoSource: Sync {
