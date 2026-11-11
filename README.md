@@ -45,8 +45,10 @@ vhsphys run in.mp4 out.mp4 --preset worn --config my_tape.toml
   an excerpt rendered with `--start` shows the same picture as the same frames
   of a render of the whole file. (Only the first frame of an excerpt differs a
   little, because it lacks the neighbouring frames the model looks at.)
-* The picture is processed as NTSC (29.97 fps, 754x480 active picture). ffmpeg
-  scales to that and back, so any input size/rate works. The linear audio track
+* The picture is processed as NTSC by default (29.97 fps, 754x480 active picture);
+  `--standard pal` makes it 625-line PAL (25 fps, 740x576), see
+  [Television standards](#television-standards). ffmpeg scales to the standard's
+  picture and back, so any input size/rate works. The linear audio track
   is processed alongside the picture (or copied untouched with `--audio copy`).
 * About 11-14 frames per second on 8 cores (a 30 s 720p clip takes ~80 s; peak memory ~0.5 GB).
 
@@ -74,6 +76,58 @@ humidity, mains, tracking, tension ...) that the laws in
 Any raw parameter can be overridden (`--set tape.defects_per_mm2=0.03`,
 `--set head1.extra_spacing_um=0.9`, `[tape]`/`[deck]`/... tables in a config
 file). `[condition]` in a config file refines the preset before it is mapped.
+
+## Television standards
+
+`--standard` chooses the television system the tape is recorded and played in: `ntsc` (the
+default), `pal` or `pal60`. In a config file it is a top-level `standard = "pal"` (above the
+first table), and `--set standard=pal` does the same; the flag wins over both. An unknown name is
+an error.
+
+| | `ntsc` | `pal` | `pal60` |
+|---|---|---|---|
+| tape | 525 lines, 59.94 fields | 625 lines, 50 fields | 525 lines, 59.94 fields |
+| television | NTSC | PAL | PAL |
+| frame rate | 29.97 (30000/1001) | 25 | 29.97 (30000/1001) |
+| active picture | 754x480 | 740x576 | 754x480 |
+| tape speeds | SP, LP, EP | SP, LP | SP, LP, EP |
+
+* `ntsc` is the model described in the rest of this file.
+* `pal` is a 625-line recording played into a PAL television: another drum and tape speed, another
+  colour-under carrier with the line-by-line V switch, a delay-line colour decoder, and the 50 Hz
+  mains. The same tape condition costs more in PAL, because the head moves more slowly across the
+  tape. `docs/PAL.md` has the figures and what is not modelled.
+* `pal60` is an NTSC tape played on a multi-standard deck into a PAL television. The tape is
+  exactly the NTSC one; only the television differs. A phase error that comes off the tape (head
+  switching, timebase) still shows as a hue error, only averaged over two lines; one made in the
+  television (`decode.tv_phase_deg`) costs saturation instead of hue, as it does in PAL. See
+  "PAL-60" in `docs/PAL.md`.
+
+The standard decides which of the two engines in the core runs, so it also decides what is
+accepted: EP is refused in `pal` (the 625-line format has no EP), and composite output is
+refused with a PAL television (`pal` and `pal60`), because the composite stage is an NTSC encoder
+and decoder. Both are errors on standard error and a nonzero exit, from a config file and from
+`--set` alike.
+
+Everything else is the same in every standard. The output has the standard's frame rate whatever
+the input's (a 25 fps clip rendered as `ntsc` comes out at 29.97 fps). `--start` and `-t` count
+that standard's frames: `-t` is turned into a whole number of frame periods before it is given to
+ffmpeg, so that the clip is exactly that many frames long. The sound is played through the same
+tape and deck as the picture, so at PAL speed it is that tape's.
+
+`vhsphys show worn --standard pal` prints the PAL parameters of a preset (they include
+`standard`); with `--condition` it prints the condition of the preset on that engine, with the
+`standard` line above `[condition]` so that the output works as a `--config` file.
+
+The camera pickup tube ahead of the recorder works in every standard: `--camera-tube` takes `off`
+(the default), `plumbicon`, `plumbicon-bias` or `plumbicon-act`, and `--iris-stops N` sets the
+exposure in stops (positive overexposes, so highlights leave comet tails). The model is in
+`docs/CAMERA.md`.
+
+```sh
+vhsphys run in.mp4 out.mp4 --preset worn --standard pal
+vhsphys run in.mp4 out.mp4 --preset worn --standard pal --camera-tube plumbicon --iris-stops 2
+```
 
 ## Graphical interface
 
@@ -281,8 +335,8 @@ cd python && ../.venv/bin/python -m pytest -q tests
 
 ## Known limits of this prototype
 
-* NTSC VHS SP/LP/EP only (no PAL/SECAM/S-VHS; the constants and structure are in
-  place; PAL needs a per-line V switch).
+* NTSC, PAL and PAL-60 are modelled (see [Television standards](#television-standards)); SECAM and
+  S-VHS are not.
 * Input is treated as a progressive source (the two fields of a frame come from
   the same image); there is no 59.94 fps field output yet.
 * The luma noise canceller of HQ decks (SP, playback only), Hi-Fi audio and print-through are not
@@ -298,7 +352,7 @@ crates/vhsphys-cli    `vhsphys` command line tool (ffmpeg pipes)
 python/vhsgui         desktop front end (PySide6) for the command line tool
 python/vhslab         reference physics, validation report, tuning and plotting tools
 docs/                 RESEARCH, ARCHITECTURE, PLUGIN, PERFORMANCE, COMPARISON, PHYSICAL_MODELLING_RESEARCH,
-                      TAPE_SPEEDS, COMPOSITE, AUDIO, INTERFERENCE, design/, images
+                      TAPE_SPEEDS, COMPOSITE, AUDIO, INTERFERENCE, PAL, CAMERA, design/, images
 scripts/gallery.sh    regenerate the gallery images
 scripts/features.sh   regenerate the feature images
 scripts/interference.sh  regenerate the interference images
