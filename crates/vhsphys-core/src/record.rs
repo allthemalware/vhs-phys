@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::consts::*;
 use crate::dsp::*;
 use crate::emphasis::SubPreemphasis;
+use crate::format::TvStandard;
 use crate::video::Baseband;
 use std::f64::consts::PI;
 use std::sync::OnceLock;
@@ -56,6 +57,9 @@ pub struct RecordParams {
     /// Asymmetry of the FM drive (DC offset of the record current): a failing
     /// modulator gives an asymmetrical, distorted FM carrier.
     pub drive_offset: f64,
+    /// Television standard (`ntsc` or `pal`): selects 3.4..4.4 MHz vs 3.8..4.8 MHz FM carrier
+    /// and NTSC vs PAL colour-under phase rotation.
+    pub standard: TvStandard,
 }
 
 impl Default for RecordParams {
@@ -76,6 +80,7 @@ impl Default for RecordParams {
             carrier_interleave_hz: 0.0,
             relay_threshold: 0.30,
             drive_offset: 0.0,
+            standard: TvStandard::Ntsc,
         }
     }
 }
@@ -97,6 +102,32 @@ pub fn line_rotation(parity: usize, line: i64) -> (f32, f32) {
     let m = line.rem_euclid(4) as usize;
     let m = if parity == 0 { m } else { (4 - m) % 4 };
     [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0)][m]
+}
+
+/// Standard-aware colour-under phase rotation per line.
+/// In NTSC, track 0 rotates +90 deg/line and track 1 rotates -90 deg/line.
+/// In PAL (40.125 fH offset + track 1 90-deg shift), track 0 advances +45 deg/line
+/// and track 1 advances +135 deg/line.
+pub fn line_rotation_std(std: TvStandard, parity: usize, line: i64) -> (f32, f32) {
+    match std {
+        TvStandard::Ntsc => line_rotation(parity, line),
+        TvStandard::Pal => {
+            const S: f32 = std::f32::consts::FRAC_1_SQRT_2;
+            const STEPS: [(f32, f32); 8] = [
+                (1.0, 0.0),
+                (S, S),
+                (0.0, 1.0),
+                (-S, S),
+                (-1.0, 0.0),
+                (-S, -S),
+                (0.0, -1.0),
+                (S, -S),
+            ];
+            let step = if parity == 0 { 1 } else { 3 };
+            let m = (line.rem_euclid(8) as usize * step) % 8;
+            STEPS[m]
+        }
+    }
 }
 
 /// Source of baseband video: concatenated frames addressed by baseband sample
@@ -143,7 +174,7 @@ pub fn fm_modulate(y_rf: &[f32], p: &RecordParams, offset_hz: f64, out: &mut Vec
     out.reserve(y_rf.len());
     let mut phase = 0.0f64;
     let k = 2.0 * PI / FS_RF;
-    let f0 = (F_SYNC_TIP + offset_hz) * (1.0 + p.fm_freq_error);
+    let f0 = (p.standard.f_sync_tip() + offset_hz) * (1.0 + p.fm_freq_error);
     for &y in y_rf {
         let f = f0 + (y as f64 + 40.0) * HZ_PER_IRE * p.fm_deviation_scale;
         phase += k * f;
@@ -226,7 +257,7 @@ pub fn record_track(src: &dyn VideoSource, p: &RecordParams, parity: usize, g0: 
         let gi = g0 + n as i64;
         let line = gi.div_euclid(RF_PER_LINE as i64);
         let r = gi.rem_euclid(RF_PER_LINE as i64) as usize;
-        let (rc, rs) = line_rotation(parity, line);
+        let (rc, rs) = line_rotation_std(p.standard, parity, line);
         // carrier phasor e^{j(theta + rho)}
         let (cr, ci) = (tc[r] * rc - ts[r] * rs, tc[r] * rs + ts[r] * rc);
         let u = a * (cu_rf[off + n] * cr - cv_rf[off + n] * ci);

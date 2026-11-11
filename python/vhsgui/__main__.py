@@ -1,4 +1,4 @@
-"""Command line entry point: python -m vhsgui [--schematic] [--page {circuit,outside}] [--binary PATH] [--screenshot PNG] [input]."""
+"""Command line entry point: python -m vhsgui [--schematic | --panels] [--page {circuit,outside}] [--binary PATH] [--screenshot PNG] [input]."""
 from __future__ import annotations
 
 import argparse
@@ -17,16 +17,44 @@ MISSING_FFMPEG = "ffmpeg not found. Install it with your package manager, for ex
 MISSING_FFPROBE = "ffprobe not found. It comes with ffmpeg: install it with your package manager"
 
 
+HELP_DESCRIPTION = """\
+Desktop front end for vhs-phys. The window opens on the phosphor schematic
+(the signal-chain page); the Panels / Schematic buttons switch views at any time."""
+HELP_EPILOG = """\
+examples:
+  python -m vhsgui clip.mp4                 open a video on the schematic
+  python -m vhsgui --page outside clip.mp4  start on the interference page
+  python -m vhsgui --panels clip.mp4        start with the plain settings panels
+  QT_QPA_PLATFORM=offscreen python -m vhsgui --screenshot out.png clip.mp4
+"""
+
+
 def _parse(argv: Sequence[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="python -m vhsgui", description="Desktop front end for vhs-phys.")
+    parser = argparse.ArgumentParser(
+        prog="python -m vhsgui",
+        description=HELP_DESCRIPTION,
+        epilog=HELP_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("input", nargs="?", help="video file to open")
-    parser.add_argument("--binary", metavar="PATH", help="the vhsphys executable (default: search for it)")
-    parser.add_argument("--schematic", action="store_true", help="start with the phosphor schematic")
-    parser.add_argument("--page", choices=("circuit", "outside"), help="schematic page to show")
-    parser.add_argument("--screenshot", metavar="PNG", help="save a picture of the window and exit")
+    parser.add_argument(
+        "--binary",
+        metavar="PATH",
+        help="the vhsphys executable (default: $VHSPHYS_BIN, then target/release, target/debug, then the PATH)",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--schematic", action="store_true", help="start with the phosphor schematic (the default)")
+    mode.add_argument("--panels", action="store_true", help="start with the settings panels instead of the schematic")
+    parser.add_argument(
+        "--page",
+        choices=("circuit", "outside"),
+        help="schematic page to start on: circuit (signal chain) or outside (interference); default: circuit",
+    )
+    parser.add_argument("--screenshot", metavar="PNG", help="save a picture of the window and exit (works with QT_QPA_PLATFORM=offscreen)")
     args = parser.parse_args(argv)
-    if args.page is not None and not args.schematic:
-        parser.error("--page requires --schematic")
+    if args.page is not None and args.panels:
+        parser.error("--page cannot be used with --panels")
+    args.schematic = not args.panels
     if args.page is None:
         args.page = "circuit"
     return args

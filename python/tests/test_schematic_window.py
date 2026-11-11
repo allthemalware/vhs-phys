@@ -14,8 +14,9 @@ every change made on it goes through them. The surface fixed here:
     MainWindow.set_schematic_page(name)  what the two page buttons call
     "panelsButton", "schematicButton"    checkable, exclusive, visible in both modes
     "circuitButton", "outsideButton"     checkable, exclusive, visible in schematic mode only
-    python -m vhsgui --schematic         starts in schematic mode; with --screenshot the picture shows the
-                                         settled drawing (no half-drawn boot); `--page outside` shows the other page
+    python -m vhsgui                     starts in schematic mode (as does --schematic; --panels starts with the
+                                         panels); with --screenshot the picture shows the settled drawing (no
+                                         half-drawn boot); `--page outside` shows the other page
 
 In schematic mode the editors and the preview picture are hidden (the TV shows the picture) and the rest
 of the window stays reachable below the schematic. The window starts in panels mode.
@@ -541,11 +542,16 @@ def test_the_module_can_start_in_schematic_mode_and_save_a_picture_of_it(binary,
     r, g, b = raw[..., 2], raw[..., 1], raw[..., 0]
     phosphor = (g > 120) & (g > 1.6 * r) & (g > 1.3 * b)
     assert phosphor.mean() > 0.01, "the schematic is on the picture and fully drawn"  # measured on the whole window: 3.3 % with the finished drawing, 1.5 % with the placeholder, about 0 % mid-boot
+    default = tmp_path / "default.png"
+    assert _run_module("--screenshot", str(default)).returncode == 0
+    d = QImage(str(default)).convertToFormat(QImage.Format.Format_RGB32)
+    draw = np.frombuffer(d.constBits(), np.uint8).reshape(d.height(), d.bytesPerLine() // 4, 4)[:, : d.width()].astype(float)
+    assert ((draw[..., 1] > 120) & (draw[..., 1] > 1.6 * draw[..., 2]) & (draw[..., 1] > 1.3 * draw[..., 0])).mean() > 0.01, "the default is the schematic"
     plain = tmp_path / "panels.png"
-    assert _run_module("--screenshot", str(plain)).returncode == 0
+    assert _run_module("--panels", "--screenshot", str(plain)).returncode == 0
     p = QImage(str(plain)).convertToFormat(QImage.Format.Format_RGB32)
     praw = np.frombuffer(p.constBits(), np.uint8).reshape(p.height(), p.bytesPerLine() // 4, 4)[:, : p.width()].astype(float)
-    assert ((praw[..., 1] > 120) & (praw[..., 1] > 1.6 * praw[..., 2]) & (praw[..., 1] > 1.3 * praw[..., 0])).mean() < phosphor.mean() / 3, "the default is still the panels"
+    assert ((praw[..., 1] > 120) & (praw[..., 1] > 1.6 * praw[..., 2]) & (praw[..., 1] > 1.3 * praw[..., 0])).mean() < phosphor.mean() / 3, "--panels starts with the panels"
 
 
 def test_the_module_can_start_on_the_outside_page(binary, tmp_path):
@@ -557,5 +563,6 @@ def test_the_module_can_start_on_the_outside_page(binary, tmp_path):
     raw = np.frombuffer(image.constBits(), np.uint8).reshape(image.height(), image.bytesPerLine() // 4, 4)[:, : image.width()].astype(float)
     r, g, b = raw[..., 2], raw[..., 1], raw[..., 0]
     assert ((g > 120) & (g > 1.6 * r) & (g > 1.3 * b)).mean() > 0.01
-    assert _run_module("--page", "outside", "--screenshot", str(tmp_path / "x.png")).returncode != 0, "a page without --schematic makes no sense"
+    assert _run_module("--page", "outside", "--screenshot", str(tmp_path / "y.png")).returncode == 0, "the schematic is the default, so --page alone is enough"
+    assert _run_module("--panels", "--page", "outside", "--screenshot", str(tmp_path / "x.png")).returncode != 0, "a page with --panels makes no sense"
 

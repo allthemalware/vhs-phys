@@ -127,6 +127,30 @@ enum AudioMode {
     None,
 }
 
+/// Television colour and VHS RF standard.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum StandardArg {
+    /// NTSC-M (3.4..4.4 MHz FM luma, 629 kHz 90-deg colour-under).
+    Ntsc,
+    /// PAL (3.8..4.8 MHz FM luma, 627 kHz swinging-burst +/-V colour-under).
+    Pal,
+}
+
+/// Camera pickup tube target chemistry ahead of the VHS recorder.
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum CameraTubeArg {
+    /// No camera tube lag (direct video input).
+    Off,
+    /// Lead-oxide (PbO) studio broadcast tube: warm red/amber highlight comet-tails.
+    Plumbicon,
+    /// Se-As-Te 1980s OB/studio tube: amber-green highlight comet-tails.
+    Saticon,
+    /// ZnSe-ZnCdTe low-light/camcorder tube: pronounced green-amber trailing lights.
+    Newvicon,
+    /// Antimony-trisulfide (Sb2S3) tube: heavy photoconductive lag and long trails.
+    Vidicon,
+}
+
 #[derive(clap::Args)]
 struct RunArgs {
     input: PathBuf,
@@ -149,6 +173,15 @@ struct RunArgs {
     /// Sound: process (through the simulated tape and deck), copy (untouched) or none.
     #[arg(long, value_enum, default_value_t = AudioMode::Process)]
     audio: AudioMode,
+    /// Television and VHS RF standard: ntsc or pal.
+    #[arg(long, value_enum)]
+    standard: Option<StandardArg>,
+    /// Camera pickup tube chemistry for highlight comet-tails / lag: plumbicon, saticon, newvicon, vidicon.
+    #[arg(long, value_enum)]
+    camera_tube: Option<CameraTubeArg>,
+    /// Enable CRT P22 phosphor persistence on the decoded display output.
+    #[arg(long)]
+    phosphor: bool,
     /// Start time in seconds.
     #[arg(long)]
     start: Option<f64>,
@@ -216,8 +249,28 @@ fn run(a: RunArgs) -> Result<()> {
     // `--set seed=N` is the seed of the whole chain, like a `seed` in the config file: it goes
     // into the config text, where every later generation derives its own seed from it. The
     // other `--set` items apply to every generation as they are.
-    let (seed_sets, other_sets): (Vec<String>, Vec<String>) =
+    let (seed_sets, mut other_sets): (Vec<String>, Vec<String>) =
         a.sets.iter().cloned().partition(|s| s.split_once('=').is_some_and(|(k, _)| k.trim() == "seed"));
+    if let Some(std) = a.standard {
+        let name = match std {
+            StandardArg::Ntsc => "ntsc",
+            StandardArg::Pal => "pal",
+        };
+        other_sets.insert(0, format!("standard={name}"));
+    }
+    if let Some(tube) = a.camera_tube {
+        let name = match tube {
+            CameraTubeArg::Off => "off",
+            CameraTubeArg::Plumbicon => "plumbicon",
+            CameraTubeArg::Saticon => "saticon",
+            CameraTubeArg::Newvicon => "newvicon",
+            CameraTubeArg::Vidicon => "vidicon",
+        };
+        other_sets.insert(0, format!("camera.tube={name}"));
+    }
+    if a.phosphor {
+        other_sets.insert(0, "camera.phosphor_enabled=true".to_string());
+    }
     let mut text = file_text;
     if !seed_sets.is_empty() {
         let seed_set: toml::Table = toml::from_str(&config::sets_to_toml(&seed_sets).map_err(anyhow::Error::msg)?)?;

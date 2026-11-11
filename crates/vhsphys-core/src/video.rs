@@ -6,6 +6,8 @@
 //! `cu` along the +U axis. The colour burst is `-BURST_AMP` on `cu` (180 deg).
 
 use crate::consts::*;
+use crate::format::TvStandard;
+use std::f32::consts::FRAC_1_SQRT_2;
 use std::sync::OnceLock;
 
 /// An RGB frame at the active-picture size (754 x 480).
@@ -78,21 +80,41 @@ fn build_structure() -> Structure {
 
 #[inline]
 pub fn rgb_to_ycc(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    rgb_to_ycc_std(r, g, b, TvStandard::Ntsc)
+}
+
+#[inline]
+pub fn rgb_to_ycc_std(r: f32, g: f32, b: f32, std: TvStandard) -> (f32, f32, f32) {
     let y = 0.299 * r + 0.587 * g + 0.114 * b;
     let u = 0.492 * (b - y);
     let v = 0.877 * (r - y);
-    (SETUP_IRE + VIDEO_SPAN_IRE * y, VIDEO_SPAN_IRE * u, VIDEO_SPAN_IRE * v)
+    let setup = std.setup_ire();
+    let span = std.video_span_ire();
+    (setup + span * y, span * u, span * v)
 }
 
 #[inline]
 pub fn ycc_to_rgb(y_ire: f32, cu: f32, cv: f32) -> [f32; 3] {
-    let y = (y_ire - SETUP_IRE) / VIDEO_SPAN_IRE;
-    let u = cu / VIDEO_SPAN_IRE;
-    let v = cv / VIDEO_SPAN_IRE;
+    ycc_to_rgb_std(y_ire, cu, cv, TvStandard::Ntsc)
+}
+
+#[inline]
+pub fn ycc_to_rgb_std(y_ire: f32, cu: f32, cv: f32, std: TvStandard) -> [f32; 3] {
+    let setup = std.setup_ire();
+    let span = std.video_span_ire();
+    let y = (y_ire - setup) / span;
+    let u = cu / span;
+    let v = cv / span;
     let r = y + v / 0.877;
     let b = y + u / 0.492;
     let g = (y - 0.299 * r - 0.114 * b) / 0.587;
     [r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0)]
+}
+
+/// PAL V-axis switch sign (+1 or -1) on `frame_line`, alternating on consecutive lines of a field.
+#[inline]
+pub fn pal_v_sign(frame_line: usize) -> f32 {
+    if frame_line % 2 == 0 { 1.0 } else { -1.0 }
 }
 
 /// Frame line (0-based) and field of display row `r` (0..480).
@@ -105,8 +127,16 @@ pub fn burst_present(line: usize) -> bool {
     structure().1[line]
 }
 
-/// Encode an RGB frame (754 x 480) to baseband Y / C.
+/// Encode an RGB frame (754 x 480) to baseband Y / C (NTSC).
 pub fn encode_frame(frame: &Frame) -> Baseband {
+    encode_frame_with_standard(frame, TvStandard::Ntsc)
+}
+
+/// Encode an RGB frame (754 x 480) to baseband Y / C using `std` (`Ntsc` or `Pal`).
+///
+/// In PAL mode, the V (R-Y) component alternates sign on consecutive field lines (`pal_v_sign`),
+/// the colour burst swings between +135 deg and -135 deg (+/-45 deg about -U), and black setup is 0 IRE.
+pub fn encode_frame_with_standard(frame: &Frame, std: TvStandard) -> Baseband {
     assert!(frame.w == ACTIVE_W && frame.h == ACTIVE_H, "frame must be {ACTIVE_W}x{ACTIVE_H}");
     let (sync, burst_line) = structure();
     let mut bb = Baseband { y: sync.clone(), cu: vec![0.0; FRAME_BB], cv: vec![0.0; FRAME_BB] };
@@ -114,11 +144,20 @@ pub fn encode_frame(frame: &Frame) -> Baseband {
     for line in 0..LINES {
         if burst_line[line] {
             let s0 = line * BB_PER_LINE + BURST_START;
+            let v_sign = pal_v_sign(line);
             for i in 0..BURST_LEN {
                 // 4-sample raised-cosine edges keep the burst narrow-band
                 let e = (i.min(BURST_LEN - 1 - i) as f32 / 4.0).min(1.0);
                 let w = 0.5 - 0.5 * (std::f32::consts::PI * e).cos();
-                bb.cu[s0 + i] = -BURST_AMP_IRE * w;
+                match std {
+                    TvStandard::Ntsc => {
+                        bb.cu[s0 + i] = -BURST_AMP_IRE * w;
+                    }
+                    TvStandard::Pal => {
+                        bb.cu[s0 + i] = -BURST_AMP_IRE * FRAC_1_SQRT_2 * w;
+                        bb.cv[s0 + i] = v_sign * BURST_AMP_IRE * FRAC_1_SQRT_2 * w;
+                    }
+                }
             }
         }
     }
@@ -126,6 +165,10 @@ pub fn encode_frame(frame: &Frame) -> Baseband {
     for row in 0..ACTIVE_H {
         let (line, _) = row_to_line(row);
         let base = line * BB_PER_LINE + ACTIVE_START;
+        let v_sign = match std {
+            TvStandard::Ntsc => 1.0,
+            TvStandard::Pal => pal_v_sign(line),
+        };
         for x in 0..ACTIVE_W {
             let p = (row * ACTIVE_W + x) * 3;
             let (r, g, b) = (
@@ -133,10 +176,10 @@ pub fn encode_frame(frame: &Frame) -> Baseband {
                 frame.rgb[p + 1] as f32 / 255.0,
                 frame.rgb[p + 2] as f32 / 255.0,
             );
-            let (y, u, v) = rgb_to_ycc(r, g, b);
+            let (y, u, v) = rgb_to_ycc_std(r, g, b, std);
             bb.y[base + x] = y;
             bb.cu[base + x] = u;
-            bb.cv[base + x] = v;
+            bb.cv[base + x] = v * v_sign;
         }
     }
     bb
@@ -144,12 +187,18 @@ pub fn encode_frame(frame: &Frame) -> Baseband {
 
 /// Perfect-timing decode used for tests and the `--bypass` reference mode.
 pub fn decode_ideal(bb: &Baseband) -> Frame {
+    decode_ideal_with_standard(bb, TvStandard::Ntsc)
+}
+
+/// Perfect-timing decode for `std` (`Ntsc` or `Pal`, where `bb.cv` has already been un-switched
+/// by `decode_planes` or is un-switched here when called directly on `encode_frame_with_standard`).
+pub fn decode_ideal_with_standard(bb: &Baseband, std: TvStandard) -> Frame {
     let mut f = Frame::new(ACTIVE_W, ACTIVE_H);
     for row in 0..ACTIVE_H {
         let (line, _) = row_to_line(row);
         let base = line * BB_PER_LINE + ACTIVE_START;
         for x in 0..ACTIVE_W {
-            let rgb = ycc_to_rgb(bb.y[base + x], bb.cu[base + x], bb.cv[base + x]);
+            let rgb = ycc_to_rgb_std(bb.y[base + x], bb.cu[base + x], bb.cv[base + x], std);
             let p = (row * ACTIVE_W + x) * 3;
             for k in 0..3 {
                 f.rgb[p + k] = (rgb[k] * 255.0 + 0.5) as u8;

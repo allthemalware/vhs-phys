@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::consts::*;
 use crate::dsp::*;
 use crate::emphasis::SubDeemphasis;
+use crate::format::TvStandard;
 
 /// Nominal discriminator delay assumed by the downstream scaling (samples).
 pub const DEMOD_DELAY_NOMINAL: f64 = 3.0;
@@ -72,6 +73,8 @@ pub struct DeckParams {
     pub coupling_hpf_hz: f64,
     /// DC offset error of the discriminator (IRE), e.g. a detuned tank.
     pub dc_error_ire: f64,
+    /// Television standard (`ntsc` or `pal`): selects 3.4 MHz vs 3.8 MHz sync-tip carrier.
+    pub standard: TvStandard,
 }
 
 /// Power-supply related disturbances reaching the video path.
@@ -122,6 +125,7 @@ impl Default for DeckParams {
             supply: SupplyParams::default(),
             coupling_hpf_hz: 15.0,
             dc_error_ire: 0.0,
+            standard: TvStandard::Ntsc,
         }
     }
 }
@@ -243,9 +247,10 @@ pub fn process_segment(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
     let mut fmx = x.clone();
     butter_hp(4, p.fm_hpf_hz, FS_RF).process(&mut fmx);
     let mut prod = discriminate(&fmx, p.limiter_threshold as f32, p.demod_delay);
+    let f_sync_tip = p.standard.f_sync_tip();
     let mut lpf = butter_lp(p.demod_lpf_order, p.demod_lpf_hz, FS_RF);
     // the discriminator idles at the sync-tip... settle on the 0 IRE level
-    lpf.settle(r_of_freq(F_SYNC_TIP + 40.0 * HZ_PER_IRE) as f64);
+    lpf.settle(r_of_freq(f_sync_tip + 40.0 * HZ_PER_IRE) as f64);
     lpf.process(&mut prod);
 
     // product -> frequency -> IRE using the *nominal* design delay
@@ -253,7 +258,7 @@ pub fn process_segment(rf: &[f32], p: &DeckParams, g0: i64) -> SegmentOut {
     let mut y = vec![0.0f32; n];
     for i in 0..n {
         let f = (1.0 - prod[i] as f64) / (4.0 * tau);
-        y[i] = ((f - F_SYNC_TIP) / HZ_PER_IRE - 40.0) as f32;
+        y[i] = ((f - f_sync_tip) / HZ_PER_IRE - 40.0) as f32;
     }
 
     // ---- de-emphasis (inverse of the record emphasis, with component drift), sub-deemphasis ----

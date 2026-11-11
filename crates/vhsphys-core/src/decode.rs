@@ -17,10 +17,11 @@ use crate::composite::{self, CompositeParams};
 use crate::consts::*;
 use crate::crt;
 use crate::dsp::*;
+use crate::format::TvStandard;
 use crate::interference::video_line_terms;
 use crate::interference_params::InterferenceParams;
-use crate::record::line_rotation;
-use crate::video::{decode_ideal, Baseband, Frame};
+use crate::record::line_rotation_std;
+use crate::video::{decode_ideal_with_standard, pal_v_sign, Baseband, Frame};
 use std::f64::consts::PI;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -45,6 +46,9 @@ pub struct DecodeParams {
     /// How much the chroma path lags the luma path, baseband samples
     /// (measured at alignment; the deck's luma delay line cancels it).
     pub chroma_delay: f64,
+    /// Television standard (`ntsc` or `pal`): selects NTSC 180-deg burst vs PAL swinging
+    /// burst (+/-135 deg), per-line V-switch alternation, and PAL delay-line comb.
+    pub standard: TvStandard,
 }
 
 impl Default for DecodeParams {
@@ -61,6 +65,7 @@ impl Default for DecodeParams {
             burst_nominal: 1.0,
             burst_boost: 2.0,
             chroma_delay: 0.0,
+            standard: TvStandard::Ntsc,
         }
     }
 }
@@ -147,7 +152,7 @@ pub(crate) fn demod_chroma(view: &StreamView, start: i64, len: usize, p: &Decode
         let line = n.div_euclid(BB_PER_LINE as i64);
         let col = n.rem_euclid(BB_PER_LINE as i64) as f64;
         let th = 2.0 * PI * 40.0 * col / BB_PER_LINE as f64;
-        let (rc, rs) = line_rotation(head_parity_at(n), line);
+        let (rc, rs) = line_rotation_std(p.standard, head_parity_at(n), line);
         let (c, s) = (th.cos() as f32, th.sin() as f32);
         // carrier phasor e^{j(th+rho)}
         let (pc, ps) = (c * rc - s * rs, c * rs + s * rc);
@@ -170,7 +175,7 @@ pub fn decode_frame(k: i64, view: &StreamView, p: &DecodeParams, composite: &Com
     if composite.enabled {
         composite::roundtrip(&mut bb, k, composite);
     }
-    let mut frame = decode_ideal(&bb);
+    let mut frame = decode_ideal_with_standard(&bb, p.standard);
     // nothing acts on the tube without a magnet or a stray field
     if itf.crt_on() {
         crt::apply(&mut frame, k, itf);
@@ -238,7 +243,16 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
             }
             let (br, bi) = (br / 20.0, bi / 20.0);
             let bmag = (br * br + bi * bi).sqrt();
-            let phi = bi.atan2(br) - PI;
+            let frame_line = FIELD_FIRST_LINE[field] + j;
+            let v_sign = match p.standard {
+                TvStandard::Ntsc => 1.0,
+                TvStandard::Pal => pal_v_sign(frame_line),
+            };
+            let burst_ref_angle = match p.standard {
+                TvStandard::Ntsc => PI,
+                TvStandard::Pal => PI - (v_sign as f64) * (PI / 4.0),
+            };
+            let phi = bi.atan2(br) - burst_ref_angle;
             let wrap = |a: f64| (a + PI).rem_euclid(2.0 * PI) - PI;
             if j == 0 {
                 phi_s = wrap(phi);
@@ -273,8 +287,8 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
                     cl.push([0.0, 0.0]);
                 } else {
                     let (r, i) = (cat(pos + p.chroma_delay, &cre) as f64, cat(pos + p.chroma_delay, &cim) as f64);
-                    // rotate by -phi, scale to the burst reference amplitude
-                    let (rr, ii) = (r * cr - i * sr, r * sr + i * cr);
+                    // rotate by -phi, scale to the burst reference amplitude, and un-switch V in PAL
+                    let (rr, ii) = (r * cr - i * sr, (r * sr + i * cr) * (v_sign as f64));
                     cl.push([(rr * scale) as f32, (ii * scale) as f32]);
                 }
             }

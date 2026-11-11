@@ -33,8 +33,10 @@ pub const HALF_LINE_BB: usize = BB_PER_LINE / 2;
 pub const SYNC_IRE: f32 = -40.0;
 pub const BLANK_IRE: f32 = 0.0;
 pub const SETUP_IRE: f32 = 7.5;
+pub const SETUP_IRE_PAL: f32 = 0.0;
 pub const WHITE_IRE: f32 = 100.0;
 pub const VIDEO_SPAN_IRE: f32 = 92.5;
+pub const VIDEO_SPAN_IRE_PAL: f32 = 100.0;
 pub const BURST_AMP_IRE: f32 = 20.0;
 
 // Baseband line layout (samples at 4 x fsc, 69.8 ns each).
@@ -57,6 +59,7 @@ pub const HEAD_SPEED: f64 = PI * DRUM_DIAMETER_M * FRAME_RATE;
 pub const UM_PER_SAMPLE: f64 = HEAD_SPEED / FS_RF * 1.0e6;
 pub const TAPE_SPEED_SP: f64 = 0.03335;
 pub const TRACK_PITCH_UM: f64 = 58.0;
+pub const TRACK_PITCH_UM_PAL: f64 = 49.0;
 pub const TRACK_ANGLE_DEG: f64 = 5.0 + 58.0 / 60.0 + 9.9 / 3600.0;
 pub const VIDEO_AREA_MM: f64 = 10.07;
 pub const VIDEO_CENTRE_MM: f64 = 6.2;
@@ -65,6 +68,8 @@ pub const AZIMUTH_DEG: f64 = 6.0;
 
 /// Luma FM: sync tip 3.4 MHz, 1 MHz per 140 IRE (white = 4.4 MHz).
 pub const F_SYNC_TIP: f64 = 3.4e6;
+/// PAL VHS Luma FM: sync tip 3.8 MHz, 1 MHz per 140 IRE (white = 4.8 MHz).
+pub const F_SYNC_TIP_PAL: f64 = 3.8e6;
 pub const HZ_PER_IRE: f64 = 1.0e6 / 140.0;
 pub const PRE_EMPH_TAU: f64 = 1.3e-6;
 pub const PRE_EMPH_RATIO: f64 = 5.0; // 1 + Rb/Ra, Rb/Ra = 4
@@ -72,6 +77,8 @@ pub const WHITE_CLIP_IRE: f32 = (-40.0 + 1.6 * 140.0) as f32; // 184
 pub const DARK_CLIP_IRE: f32 = (-40.0 - 0.4 * 140.0) as f32; // -96
 /// Colour-under carrier, 40 x fH.
 pub const F_CU: f64 = 40.0 * FH;
+/// PAL VHS colour-under carrier cycles per line (40 + 1/8 fH = 626.95 kHz).
+pub const PAL_CU_CYCLES_PER_LINE: f64 = 40.125;
 
 /// Along-track offset of adjacent tracks: the tape advance per field equals 1.5 H of
 /// head travel, so neighbouring tracks are line aligned (see docs/RESEARCH.md 3.4).

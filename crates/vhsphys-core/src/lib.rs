@@ -8,6 +8,7 @@
 //! sync/colour decoding -> frame.
 
 pub mod audio;
+pub mod camera;
 pub mod composite;
 pub mod condition;
 pub mod config;

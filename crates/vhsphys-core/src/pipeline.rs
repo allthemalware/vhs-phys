@@ -11,11 +11,12 @@
 
 use serde::{Deserialize, Serialize};
 use crate::audio::AudioParams;
+use crate::camera::{CameraParams, CameraTube, PhosphorState};
 use crate::composite::CompositeParams;
 use crate::consts::*;
 use crate::decode::{decode_frame, demod_chroma, DecodeParams, StreamView};
 use crate::electronics::{process_segment, DeckParams};
-use crate::format::TapeSpeed;
+use crate::format::{TapeSpeed, TvStandard};
 use crate::head::*;
 use crate::interference::{head_signal_gain, rf_pickup_add};
 use crate::interference_params::InterferenceParams;
@@ -24,15 +25,12 @@ use crate::record::*;
 use crate::rng::Rng;
 use crate::tape::{Tape, TapeParams};
 use crate::tracking::{lateral_weights, TrackingParams, NEIGHBOURS};
-use crate::video::{encode_frame, Baseband, Frame};
+use crate::video::{encode_frame_with_standard, Baseband, Frame};
 use rayon::prelude::*;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 const STREAM_HEAD: u64 = 1;
-
-/// Carrier frequency at which the head's nominal output is taken (the same reference as in `head_front_end`).
-const NOMINAL_CARRIER_HZ: f64 = 3.9e6;
 
 /// Input frames a session must have seen past an output frame before it can decode it:
 /// the frame itself and the two after it (tracks and segments reach into the next frames).
@@ -55,6 +53,10 @@ pub struct Params {
     pub tracking: TrackingParams,
     /// Tape speed: sets the track pitch, the tape advance and the audio bandwidth.
     pub speed: TapeSpeed,
+    /// Television and VHS RF standard (`ntsc` default, or `pal`).
+    pub standard: TvStandard,
+    /// Camera pickup tube target lag / comet-tails and CRT phosphor persistence (off by default).
+    pub camera: CameraParams,
     /// Composite video stage after the deck's decode (off by default).
     pub composite: CompositeParams,
     /// The audio path of the same deck and tape.
@@ -75,10 +77,21 @@ impl Default for Params {
             mech: MechParams::default(),
             tracking: TrackingParams::default(),
             speed: TapeSpeed::default(),
+            standard: TvStandard::default(),
+            camera: CameraParams::default(),
             composite: CompositeParams::default(),
             audio: AudioParams::default(),
             interference: InterferenceParams::default(),
         }
+    }
+}
+
+impl Params {
+    /// Propagate the top-level `standard` into the record, deck and decode stages.
+    pub fn sync_standard(&mut self) {
+        self.record.standard = self.standard;
+        self.deck.standard = self.standard;
+        self.decode.standard = self.standard;
     }
 }
 
@@ -204,7 +217,7 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64) -> Ve
     if itf.rf_on() {
         // What the head leads pick up is compared with the nominal, unworn head signal: a worn
         // head sees relatively more of it.
-        rf_pickup_add(itf, g0, &mut buf, nominal_fm_amplitude(NOMINAL_CARRIER_HZ, hp.h0_samples()));
+        rf_pickup_add(itf, g0, &mut buf, nominal_fm_amplitude(p.standard.nominal_carrier_hz(), hp.h0_samples()));
     }
     buf
 }
@@ -259,17 +272,18 @@ fn segment(p: &Params, rf: &HashMap<i64, Arc<Vec<f32>>>, n: i64) -> SegMid {
 pub fn calibrate(p: &Params) -> Calibration {
     // clean heads, nominal deck, black picture with sync + burst on every line
     let mut clean = p.clone();
+    clean.sync_standard();
     for h in clean.heads.iter_mut() {
         *h = HeadParams { cnr_db: 400.0, media_am_noise: 0.0, ..HeadParams::default() };
     }
-    clean.deck = DeckParams::default();
+    clean.deck = DeckParams { standard: clean.standard, ..DeckParams::default() };
     clean.tape = TapeParams::default();
     clean.mech = MechParams::none();
     clean.tracking = TrackingParams::default();
     // the alignment is done on the bench, away from phones, transmitters and magnets
     clean.interference = InterferenceParams::default();
     let cx = Ctx::new(clean.clone());
-    let black = Arc::new(encode_frame(&Frame::new(ACTIVE_W, ACTIVE_H)));
+    let black = Arc::new(encode_frame_with_standard(&Frame::new(ACTIVE_W, ACTIVE_H), clean.standard));
     let src = WindowSource { first: -2, frames: vec![black.clone(); 8], blank: Baseband::blank() };
     let n = 2i64;
     let (g0, len) = track_window(n);
@@ -299,7 +313,7 @@ pub fn calibrate(p: &Params) -> Calibration {
     // actually lands (path delay) and how large it is there
     let start = (g0 / OS as i64) + (100 * BB_PER_LINE) as i64;
     let line_start = (start / BB_PER_LINE as i64 + 1) * BB_PER_LINE as i64;
-    let dp = DecodeParams::default();
+    let dp = DecodeParams { standard: clean.standard, ..DecodeParams::default() };
     let (re, im) = demod_chroma(&view, line_start - 200, 30 * BB_PER_LINE + 400, &dp);
     let (mut wsum, mut csum) = (0.0f64, 0.0f64);
     for l in 2..28 {
@@ -332,6 +346,8 @@ pub struct Session {
     pub params: Params,
     cx: Ctx,
     pub cal: Calibration,
+    camera_tube: CameraTube,
+    phosphor: PhosphorState,
     frames: VecDeque<Arc<Baseband>>,
     first_idx: i64,
     pushed: i64,
@@ -352,17 +368,22 @@ impl Session {
     /// index, so a plugin host can render any part of a clip and get the same
     /// tape every time. Frames pushed are numbered from `start`.
     pub fn with_start(params: Params, start: i64) -> Self {
-        let cal = calibrate(&params);
         let mut params = params;
+        params.sync_standard();
+        let cal = calibrate(&params);
         params.deck.fm_gain = cal.fm_gain;
         params.decode.burst_nominal = cal.burst_nominal;
         params.decode.burst_boost = params.record.burst_boost as f64;
         params.decode.chroma_delay = cal.chroma_delay;
+        let camera_tube = CameraTube::new(params.camera.clone());
+        let phosphor = PhosphorState::new(&params.camera);
         let cx = Ctx::new(params.clone());
         Self {
             params,
             cx,
             cal,
+            camera_tube,
+            phosphor,
             frames: VecDeque::new(),
             first_idx: start,
             pushed: start,
@@ -376,7 +397,13 @@ impl Session {
 
     /// Queue an input frame (must be ACTIVE_W x ACTIVE_H RGB).
     pub fn push(&mut self, f: &Frame) {
-        self.frames.push_back(Arc::new(encode_frame(f)));
+        let bb = if self.params.camera.tube_on() {
+            let cam_f = self.camera_tube.process_frame(f);
+            encode_frame_with_standard(&cam_f, self.params.standard)
+        } else {
+            encode_frame_with_standard(f, self.params.standard)
+        };
+        self.frames.push_back(Arc::new(bb));
         self.pushed += 1;
     }
 
@@ -447,7 +474,7 @@ impl Session {
         // 4. decode frames
         let ks: Vec<i64> = (k0..k1).collect();
         let segm = &self.seg;
-        let frames: Vec<Frame> = ks
+        let mut frames: Vec<Frame> = ks
             .par_iter()
             .map(|&k| {
                 let parts = [&segm[&(2 * k)], &segm[&(2 * k + 1)], &segm[&(2 * k + 2)]];
@@ -457,6 +484,11 @@ impl Session {
                 decode_frame(k, &view, &p.decode, &p.composite, &p.interference)
             })
             .collect();
+        if self.params.camera.phosphor_on() {
+            for f in &mut frames {
+                self.phosphor.apply(f);
+            }
+        }
 
         self.next_out = k1;
         // evict
