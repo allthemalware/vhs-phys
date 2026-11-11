@@ -83,6 +83,7 @@ LEFT_WIDTH = 440  # initial width of the controls column
 LEFT_MIN_WIDTH = 340  # the controls scroll below this width instead of squeezing further
 PREVIEW_MIN_SIZE = (320, 200)
 PREVIEW_BACKGROUND = "#141414"
+DETACHED_PREVIEW_SIZE = (760, 520)  # default size of the detached preview window
 ERROR_STYLE = "color: #c0392b;"
 
 POLL_MS = 100  # how often running jobs are looked at
@@ -322,6 +323,35 @@ class PreviewView(QWidget):
         painter.end()
 
 
+class DetachedPreviewWindow(QWidget):
+    """Floating window hosting the video preview, allowing independent positioning across displays."""
+
+    def __init__(self, main_window: MainWindow) -> None:
+        super().__init__(None, Qt.WindowType.Window)
+        self._main = main_window
+        self.setObjectName("detachedPreviewWindow")
+        self.setWindowTitle(f"{WINDOW_TITLE} — Preview")
+        self.resize(*DETACHED_PREVIEW_SIZE)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(6, 6, 6, 6)
+        layout.setSpacing(4)
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        self.dock_button = QPushButton("Dock to main window")
+        self.dock_button.setObjectName("dockPreviewButton")
+        self.dock_button.clicked.connect(self._main._dock_preview)
+        bar.addWidget(self.dock_button)
+        layout.addLayout(bar)
+        self._container = layout
+
+    def set_preview_widget(self, widget: QWidget) -> None:
+        self._container.insertWidget(0, widget, 1)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._main._dock_preview()
+        event.accept()
+
+
 @dataclass
 class _SourceRequest:
     """The fetch of one source frame; an answer is used only while it is still the current one."""
@@ -388,6 +418,11 @@ class MainWindow(QMainWindow):
         self._playback_row: QWidget
         self._position_row: QWidget
         self._preview_row: QWidget
+        self._is_preview_detached = False
+        self._detached_window: DetachedPreviewWindow | None = None
+        self._preview_column: QWidget
+        self._preview_layout: QVBoxLayout
+        self._preview_placeholder: QWidget
 
         self.setWindowTitle(WINDOW_TITLE)
         self.resize(*WINDOW_SIZE)
@@ -959,9 +994,26 @@ class MainWindow(QMainWindow):
     def _build_preview_column(self) -> QWidget:
         column = QWidget()
         layout = QVBoxLayout(column)
+        self._preview_column = column
+        self._preview_layout = layout
         self.preview = PreviewView()
         self.preview.setObjectName("previewView")
         layout.addWidget(self.preview, 1)
+
+        self._preview_placeholder = QWidget()
+        self._preview_placeholder.setObjectName("previewPlaceholder")
+        placeholder_layout = QVBoxLayout(self._preview_placeholder)
+        placeholder_layout.setContentsMargins(20, 20, 20, 20)
+        placeholder_label = QLabel("Preview is detached into a floating window.")
+        placeholder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.reattach_button = QPushButton("Reattach preview")
+        self.reattach_button.setObjectName("reattachButton")
+        self.reattach_button.clicked.connect(self._dock_preview)
+        placeholder_layout.addStretch(1)
+        placeholder_layout.addWidget(placeholder_label)
+        placeholder_layout.addWidget(self.reattach_button, 0, Qt.AlignmentFlag.AlignCenter)
+        placeholder_layout.addStretch(1)
+        self._preview_placeholder.setVisible(False)
 
         self.original_button = QPushButton("Original")
         self.original_button.setObjectName("originalButton")
@@ -983,6 +1035,9 @@ class MainWindow(QMainWindow):
         self.save_frame_button.setEnabled(False)
         self.save_frame_button.clicked.connect(self._browse_save_frame)
         self.preview.image_changed.connect(self._update_save_frame_button)
+        self.popout_button = QPushButton("Pop out")
+        self.popout_button.setObjectName("popoutButton")
+        self.popout_button.clicked.connect(self._toggle_preview_popout)
         self.play_button = QPushButton("Play")
         self.play_button.setObjectName("playButton")
         self.play_button.clicked.connect(self._toggle_play)
@@ -995,6 +1050,7 @@ class MainWindow(QMainWindow):
         playback.addWidget(self.processed_button)
         playback.addWidget(self.split_button)
         playback.addWidget(self.save_frame_button)
+        playback.addWidget(self.popout_button)
         playback.addWidget(self.play_button)
         playback.addWidget(self.frame_slider, 1)
         playback.addWidget(self.frame_label)
@@ -1470,6 +1526,45 @@ class MainWindow(QMainWindow):
         self.split_button.setChecked(mode == MODE_SPLIT)
         self._show_frame(self._frame_index)
 
+    @property
+    def preview_detached(self) -> bool:
+        return self._is_preview_detached
+
+    def _toggle_preview_popout(self) -> None:
+        if self._is_preview_detached:
+            self._dock_preview()
+        else:
+            self._detach_preview()
+
+    def _detach_preview(self) -> None:
+        if self._is_preview_detached:
+            return
+        if self._detached_window is None:
+            self._detached_window = DetachedPreviewWindow(self)
+        self._preview_layout.removeWidget(self.preview)
+        self._preview_layout.insertWidget(0, self._preview_placeholder, 1)
+        self._preview_placeholder.setVisible(True)
+        self._detached_window.set_preview_widget(self.preview)
+        self.preview.setVisible(True)
+        self._detached_window.show()
+        self._detached_window.raise_()
+        self._detached_window.activateWindow()
+        self._is_preview_detached = True
+        self.popout_button.setText("Dock")
+
+    def _dock_preview(self) -> None:
+        if not self._is_preview_detached:
+            return
+        if self._detached_window is not None:
+            self._detached_window.layout().removeWidget(self.preview)
+            self._detached_window.hide()
+        self._preview_layout.removeWidget(self._preview_placeholder)
+        self._preview_placeholder.setVisible(False)
+        self._preview_layout.insertWidget(0, self.preview, 1)
+        self.preview.setVisible(self._panels_area.isVisible())
+        self._is_preview_detached = False
+        self.popout_button.setText("Pop out")
+
     def _toggle_view(self) -> None:
         if self.processed_frames is None:
             return
@@ -1823,6 +1918,8 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if not self._closed:
             self._closed = True
+            if self._detached_window is not None:
+                self._detached_window.close()
             for timer in (self._poll_timer, self._source_timer, self._play_timer):
                 timer.stop()
             jobs = self._jobs()
