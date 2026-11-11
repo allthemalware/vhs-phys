@@ -187,11 +187,19 @@ fn an_overexposed_highlight_leaves_a_trail_on_tape_and_the_act_gun_removes_it() 
     assert!(act[1] < off[1] + 15.0, "ACT {} vs no tube {}", act[1], off[1]);
 }
 
+/// A still scene at normal exposure comes out of the camera as it went in, apart from the
+/// tube's gamma of 0.95 (a few levels). Measured at the camera's output: the tape chain's noise
+/// decorrelates under any change of its input (the same render with every pixel one level up
+/// already differs by about 10 levels), so a whole-chain comparison cannot isolate the camera.
 #[test]
 fn a_still_scene_at_normal_exposure_is_not_restyled() {
-    let input: Vec<Frame> = (0..6).map(|_| vhsphys_core::video::test_pattern()).collect();
-    let plain = Session::run(config::build(Some("pristine"), "", 4).unwrap(), &input);
-    let tube = Session::run(config::build(Some("pristine"), "[camera]\ntube = \"plumbicon\"\n", 4).unwrap(), &input);
-    let d = mean_abs_error(&plain[5], &tube[5]);
-    assert!(d < 6.0, "mean abs difference {d}");
+    let params = vhsphys_core::camera::CameraParams { tube: TubeKind::Plumbicon, ..Default::default() };
+    let mut cam = vhsphys_core::camera::CameraTube::new(&params).unwrap();
+    let input = vhsphys_core::video::test_pattern();
+    let mut out = cam.process_frame(&input);
+    for _ in 0..20 {
+        out = cam.process_frame(&input);
+    }
+    let d = mean_abs_error(&input, &out);
+    assert!(d < 3.0, "mean abs difference {d}");
 }
