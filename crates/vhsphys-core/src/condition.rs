@@ -341,8 +341,9 @@ impl Condition {
             // LP and EP, so each head is as wide as the track it reads
             h.width_um = self.tape_speed.track_pitch_um();
             h.gain *= 1.0 - 0.10 * (self.tape_age_years / 30.0).min(1.0) * (0.5 + self.tape_storage);
+            let carrier_scale = (super::consts::F_SYNC_TIP + 0.5e6) / 3.9e6;
             // resonance (tuned network) drifts with its capacitor
-            h.q_freq_hz = 4.8e6 * (1.0 + 0.04 * deck_af * g());
+            h.q_freq_hz = 4.8e6 * carrier_scale * (1.0 + 0.04 * deck_af * g());
             h.q_gain_db = 7.0 + 1.5 * deck_af * g();
             if k == clog_head {
                 h.extra_spacing_um += 0.7 * self.head_clog;

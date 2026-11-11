@@ -94,8 +94,9 @@ pub struct SupplyParams {
 
 impl Default for DeckParams {
     fn default() -> Self {
+        let carrier_scale = (F_SYNC_TIP + 0.5e6) / 3.9e6;
         Self {
-            eq_peaks: vec![(5.4e6, 0.9, 6.0), (7.2e6, 1.2, 3.0)],
+            eq_peaks: vec![(5.4e6 * carrier_scale, 0.9, 6.0), (7.2e6 * carrier_scale, 1.2, 3.0)],
             fm_gain: 1.0,
             agc_enabled: true,
             agc_ms: 6.0,

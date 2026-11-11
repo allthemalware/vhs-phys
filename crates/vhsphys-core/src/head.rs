@@ -115,13 +115,22 @@ pub struct HeadParams {
     pub extra_spacing_um: f64,
 }
 
+/// Carrier frequency at which the head's nominal output is taken: the middle of the luma FM
+/// band, half a megahertz above the sync tip (3.9 MHz in the 525-line format, 4.3 MHz in PAL).
+pub const NOMINAL_CARRIER_HZ: f64 = F_SYNC_TIP + 0.5e6;
+
+/// Absolute track-width reference (micrometres) against which head CNR and media AM
+/// noise are normalized. 58.0 um is the 525-line SP track width. Narrower tracks (such as
+/// PAL's 49 um SP) incur the physical noise penalty.
+pub const REF_TRACK_PITCH_UM: f64 = 58.0;
+
 impl Default for HeadParams {
     fn default() -> Self {
         Self {
             h0_um: 0.36,
             gain: 1.0,
             cnr_db: 36.0,
-            q_freq_hz: 4.8e6,
+            q_freq_hz: 4.8e6 * (NOMINAL_CARRIER_HZ / 3.9e6),
             q_q: 1.1,
             q_gain_db: 7.0,
             azimuth_error_deg: 0.0,
@@ -137,10 +146,6 @@ impl HeadParams {
         self.h0_um / UM_PER_SAMPLE
     }
 }
-
-/// Carrier frequency at which the head's nominal output is taken: the middle of the luma FM
-/// band, half a megahertz above the sync tip (3.9 MHz in the 525-line format).
-pub const NOMINAL_CARRIER_HZ: f64 = F_SYNC_TIP + 0.5e6;
 
 /// Fundamental amplitude of the readback of a saturated square wave of
 /// frequency `f` (state +/-1, pulses of area 2): `(4/pi) * w * exp(-w*h)`.
@@ -159,8 +164,8 @@ pub fn nominal_fm_amplitude(f: f64, h_samples: f64) -> f64 {
 /// is the SP track pitch, for which both factors are exactly 1.
 pub fn head_front_end(buf: &mut [f32], hp: &HeadParams, rng: &mut Rng) {
     let a_nom = nominal_fm_amplitude(NOMINAL_CARRIER_HZ, hp.h0_samples());
-    let cnr_db = hp.cnr_db + 10.0 * (hp.width_um / TRACK_PITCH_UM).log10();
-    let media_am = hp.media_am_noise * (TRACK_PITCH_UM / hp.width_um).sqrt();
+    let cnr_db = hp.cnr_db + 10.0 * (hp.width_um / REF_TRACK_PITCH_UM).log10();
+    let media_am = hp.media_am_noise * (REF_TRACK_PITCH_UM / hp.width_um).sqrt();
     // white noise over fs/2 whose 6 MHz share gives the requested CNR
     let p_band = a_nom * a_nom / 2.0 / 10f64.powf(cnr_db / 10.0);
     let sigma = (p_band * (FS_RF / 2.0) / 6.0e6).sqrt() as f32;
