@@ -325,39 +325,19 @@ trait Playback {
     fn play(&mut self, max_frames: usize) -> Vec<Frame>;
 }
 
-/// The processed sound, in a temporary file that goes away with this value.
-enum SoundFile {
-    /// A WAV file: the encoder reads it as it is.
-    Wav(audio_io::TempFile),
-    /// Raw 16-bit samples with this many channels at the sound's sample rate.
-    Raw(pal_sound::RawSound, usize),
-}
+/// The processed sound, in a temporary WAV file that goes away with this value.
+struct SoundFile(audio_io::TempFile);
 
 impl SoundFile {
     /// Add the sound as the next input of an encoder command.
     fn add_input(&self, enc: &mut Command) {
-        let path = match self {
-            SoundFile::Wav(f) => f.path(),
-            SoundFile::Raw(f, channels) => {
-                enc.args(["-f", "s16le", "-ar", &audio_io::RATE.to_string(), "-ac", &channels.to_string()]);
-                f.path()
-            }
-        };
-        enc.arg("-i").arg(path);
+        enc.arg("-i").arg(self.0.path());
     }
-}
-
-fn sound_of_ntsc(ffmpeg: &str, input: &Path, t0: f64, duration: Option<f64>, channels: usize, stages: &[ntsc::pipeline::Params]) -> Result<SoundFile> {
-    audio_io::render(ffmpeg, input, t0, duration, channels, stages).map(SoundFile::Wav)
-}
-
-fn sound_of_pal(ffmpeg: &str, input: &Path, t0: f64, duration: Option<f64>, channels: usize, stages: &[pal::pipeline::Params]) -> Result<SoundFile> {
-    pal_sound::render(ffmpeg, input, t0, duration, channels, stages).map(|raw| SoundFile::Raw(raw, channels))
 }
 
 /// Implements `Engine` (and `Playback` for its chain) for the engine module `$core`.
 macro_rules! engine {
-    ($name:ident, $core:ident, $num:literal / $den:literal, $sound:path) => {
+    ($name:ident, $core:ident, $num:literal / $den:literal) => {
         struct $name;
 
         impl Engine for $name {
@@ -382,7 +362,7 @@ macro_rules! engine {
             }
 
             fn sound(ffmpeg: &str, input: &Path, t0: f64, duration: Option<f64>, channels: usize, stages: &[Self::Params]) -> Result<SoundFile> {
-                $sound(ffmpeg, input, t0, duration, channels, stages)
+                audio_io::render::<$core::audio::AudioProcessor>(ffmpeg, input, t0, duration, channels, stages).map(SoundFile)
             }
 
             fn parameters(preset: &str, text: &str, seed: u64) -> Result<String> {
@@ -414,213 +394,8 @@ macro_rules! engine {
     };
 }
 
-engine!(Ntsc525, ntsc, 30000 / 1001, sound_of_ntsc);
-engine!(Pal625, pal, 25 / 1, sound_of_pal);
-
-/// The sound of a 625-line run. `audio_io` plays the sound through the 525-line engine's decks;
-/// this is the same chain on the 625-line engine's, whose tape moves at the PAL speed, so the
-/// hiss and the loss at high frequencies are those of a PAL tape. It leaves raw 16-bit samples
-/// for the encoder, which makes it shorter than a WAV file with its header.
-mod pal_sound {
-    use super::audio_io::RATE;
-    use anyhow::{bail, Context, Result};
-    use std::fs::OpenOptions;
-    use std::io::{BufWriter, Read, Write};
-    use std::path::{Path, PathBuf};
-    use std::process::{Command, Stdio};
-    use vhsphys_core::pal::audio::AudioProcessor;
-    use vhsphys_core::pal::pipeline::Params;
-
-    /// Frames (samples per channel) decoded and processed per block, as in `audio_io`.
-    const BLOCK: usize = RATE as usize;
-
-    /// A file of raw samples in the temporary directory, removed when this is dropped, so it goes
-    /// away on success and on every error path alike.
-    pub struct RawSound {
-        path: PathBuf,
-    }
-
-    impl RawSound {
-        pub fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for RawSound {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-
-    /// One generation of the sound: its processor and the output samples still to be dropped.
-    struct Stage {
-        proc: AudioProcessor,
-        /// Absolute sample index of the next input frame.
-        pos: i64,
-        /// Output frames still to discard: the first `latency()` frames hold the empty tape.
-        skip: usize,
-    }
-
-    /// The generations of the sound in series, each one compensated for its own latency, so
-    /// every generation receives and returns a stream aligned with the absolute sample index.
-    struct SoundChain {
-        stages: Vec<Stage>,
-        channels: usize,
-    }
-
-    impl SoundChain {
-        fn new(params: &[Params], channels: usize, start: i64) -> Self {
-            let stages = params
-                .iter()
-                .map(|p| {
-                    let proc = AudioProcessor::new(p, RATE as f64, channels);
-                    let skip = proc.latency();
-                    Stage { proc, pos: start, skip }
-                })
-                .collect();
-            Self { stages, channels }
-        }
-
-        /// Run `x` through the generations from `first` on.
-        fn run_from(&mut self, first: usize, mut x: Vec<f32>) -> Vec<f32> {
-            let ch = self.channels;
-            for st in &mut self.stages[first..] {
-                let frames = x.len() / ch;
-                let y = st.proc.process(&x, st.pos);
-                st.pos += frames as i64;
-                let drop = st.skip.min(frames);
-                st.skip -= drop;
-                x = if drop == 0 { y } else { y[drop * ch..].to_vec() };
-            }
-            x
-        }
-
-        fn push(&mut self, block: &[f32]) -> Vec<f32> {
-            self.run_from(0, block.to_vec())
-        }
-
-        /// The input has ended: feed each generation as many silent frames as its latency, in
-        /// order, so that every generation returns exactly as many frames as it was given.
-        fn finish(&mut self) -> Vec<f32> {
-            let mut out = Vec::new();
-            for k in 0..self.stages.len() {
-                let tail = vec![0.0; self.stages[k].proc.latency() * self.channels];
-                out.extend(self.run_from(k, tail));
-            }
-            out
-        }
-    }
-
-    /// Fill `buf` from `r` as far as the stream allows; returns the number of bytes read.
-    fn read_full(r: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
-        let mut got = 0;
-        while got < buf.len() {
-            match r.read(&mut buf[got..])? {
-                0 => break,
-                n => got += n,
-            }
-        }
-        Ok(got)
-    }
-
-    fn write_samples(out: &mut impl Write, bytes: &mut Vec<u8>, samples: &[f32]) -> Result<()> {
-        bytes.clear();
-        for &s in samples {
-            let v = (s.clamp(-1.0, 1.0) * 32767.0).round() as i16;
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        out.write_all(bytes)?;
-        Ok(())
-    }
-
-    /// As `audio_io::render`, on the 625-line engine: decode `channels` channels of the input's
-    /// sound at 48 kHz from `t0` seconds (for at most `duration` seconds), play them through the
-    /// tapes and decks of `params` and leave the result in a temporary file of 16-bit samples.
-    /// `t0` must be the programme time of the first video frame, so the sound starts in sync with
-    /// the picture and the same stretch of tape sounds the same whatever the start.
-    pub fn render(ffmpeg: &str, input: &Path, t0: f64, duration: Option<f64>, channels: usize, params: &[Params]) -> Result<RawSound> {
-        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
-        let path = std::env::temp_dir().join(format!("vhsphys-sound-{}-{nanos}.raw", std::process::id()));
-        let file = OpenOptions::new().write(true).create_new(true).open(&path).with_context(|| format!("creating {}", path.display()))?;
-        let tmp = RawSound { path };
-
-        let mut cmd = Command::new(ffmpeg);
-        cmd.args(["-v", "error"]);
-        if t0 > 0.0 {
-            cmd.args(["-ss", &format!("{t0:.6}")]);
-        }
-        cmd.arg("-i").arg(input);
-        if let Some(d) = duration {
-            cmd.args(["-t", &format!("{d:.6}")]);
-        }
-        cmd.args(["-vn", "-ac", &channels.to_string(), "-ar", &RATE.to_string(), "-f", "f32le", "pipe:1"]);
-        let mut dec = cmd.stdout(Stdio::piped()).spawn().context("starting ffmpeg (sound decoder)")?;
-        let mut pipe = dec.stdout.take().unwrap();
-
-        let result = (|| -> Result<()> {
-            let mut out = BufWriter::new(file);
-            let mut chain = SoundChain::new(params, channels, (t0 * RATE as f64).round() as i64);
-            let frame_bytes = 4 * channels;
-            let mut raw = vec![0u8; BLOCK * frame_bytes];
-            let mut block = Vec::with_capacity(BLOCK * channels);
-            let mut bytes = Vec::new();
-            loop {
-                let n = read_full(&mut pipe, &mut raw)?;
-                // a partial frame at the very end cannot be played
-                let n = n - n % frame_bytes;
-                if n == 0 {
-                    break;
-                }
-                block.clear();
-                block.extend(raw[..n].as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)));
-                write_samples(&mut out, &mut bytes, &chain.push(&block))?;
-            }
-            write_samples(&mut out, &mut bytes, &chain.finish())?;
-            out.flush()?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = dec.kill();
-        }
-        let status = dec.wait()?;
-        result?;
-        if !status.success() {
-            bail!("ffmpeg could not decode the sound");
-        }
-        Ok(tmp)
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use vhsphys_core::pal::config;
-
-        /// Splitting the input into blocks must not change the sound, and the latency
-        /// compensation must return exactly as many frames as went in, for any number of
-        /// generations.
-        #[test]
-        fn blocks_and_generations_keep_length_and_content() {
-            let params = config::generation_params(Some("worn"), "", 3, 2).unwrap();
-            let ch = 2;
-            let frames = 30_000;
-            let x: Vec<f32> = (0..frames * ch).map(|i| 0.3 * ((i / ch) as f32 * 0.05).sin()).collect();
-
-            let mut whole = SoundChain::new(&params, ch, 1234);
-            let mut a = whole.push(&x);
-            a.extend(whole.finish());
-
-            let mut split = SoundChain::new(&params, ch, 1234);
-            let mut b = Vec::new();
-            for part in x.chunks(7_001 * ch) {
-                b.extend(split.push(part));
-            }
-            b.extend(split.finish());
-
-            assert_eq!(a.len(), x.len());
-            assert_eq!(a, b);
-        }
-    }
-}
+engine!(Ntsc525, ntsc, 30000 / 1001);
+engine!(Pal625, pal, 25 / 1);
 
 /// Take the `--set` items for `key` out of `sets`: (those, the rest).
 fn take_key(sets: Vec<String>, key: &str) -> (Vec<String>, Vec<String>) {
@@ -645,33 +420,6 @@ fn pick_standard(flag: Option<StandardArg>, sets: &[String], config_file: &toml:
         Some(v) => parse_standard(v),
         None => Ok(TvStandard::Ntsc),
     }
-}
-
-/// Merge `over` into `base` table by table: a value in `over` replaces the one in `base`.
-fn merge_into(base: &mut toml::Table, over: toml::Table) {
-    for (key, value) in over {
-        if let toml::Value::Table(o) = value {
-            if let Some(toml::Value::Table(b)) = base.get_mut(&key) {
-                merge_into(b, o);
-            } else {
-                base.insert(key, toml::Value::Table(o));
-            }
-        } else {
-            base.insert(key, value);
-        }
-    }
-}
-
-/// The `--set` overrides are applied after the engine has built the parameters, and so after its
-/// check of what it can play (composite video into a PAL television, EP at 625 lines). Build once
-/// more from the config text with the overrides merged in, for the same check to see them too.
-fn check_overrides<E: Engine>(preset: &str, text: &str, sets: &str, seed: u64) -> Result<()> {
-    let mut table: toml::Table = toml::from_str(text)?;
-    let mut over: toml::Table = toml::from_str(sets)?;
-    // an override of the `condition` is ignored when the overrides are applied, so it is here
-    over.remove("condition");
-    merge_into(&mut table, over);
-    E::generations(preset, &toml::to_string(&table)?, seed, 1, "").map(drop).map_err(anyhow::Error::msg)
 }
 
 fn run(a: RunArgs) -> Result<()> {
@@ -726,9 +474,6 @@ fn run(a: RunArgs) -> Result<()> {
 fn run_engine<E: Engine>(a: RunArgs, standard: TvStandard, text: &str, sets: &str) -> Result<()> {
     debug_assert!((E::FPS.0 as f64 / E::FPS.1 as f64 - E::FRAME_RATE).abs() < 1e-9, "the frame rate fraction does not match the engine");
     let stages = E::generations(&a.preset, text, a.seed, a.generations as usize, sets).map_err(anyhow::Error::msg)?;
-    if !sets.is_empty() {
-        check_overrides::<E>(&a.preset, text, sets, a.seed)?;
-    }
 
     let (iw, ih) = probe_size(&a.ffprobe, &a.input)?;
     let (ow, oh) = match &a.size {
@@ -987,14 +732,14 @@ mod tests {
     #[test]
     fn overrides_are_checked_like_the_config() {
         let sets = |s: &str| config::sets_to_toml(&[s.to_string()]).unwrap();
-        assert!(check_overrides::<Pal625>("worn", "standard = \"pal\"\n", &sets("speed=ep"), 1).is_err());
-        assert!(check_overrides::<Pal625>("worn", "standard = \"pal\"\n", &sets("composite.enabled=true"), 1).is_err());
-        assert!(check_overrides::<Pal625>("worn", "standard = \"pal\"\n", &sets("tape.passes=3"), 1).is_ok());
-        assert!(check_overrides::<Ntsc525>("worn", "", &sets("speed=ep"), 1).is_ok());
-        assert!(check_overrides::<Ntsc525>("worn", "standard = \"pal60\"\n", &sets("composite.enabled=true"), 1).is_err());
+        assert!(Pal625::generations("worn", "standard = \"pal\"\n", 1, 1, &sets("speed=ep")).is_err());
+        assert!(Pal625::generations("worn", "standard = \"pal\"\n", 1, 1, &sets("composite.enabled=true")).is_err());
+        assert!(Pal625::generations("worn", "standard = \"pal\"\n", 1, 1, &sets("tape.passes=3")).is_ok());
+        assert!(Ntsc525::generations("worn", "", 1, 1, &sets("speed=ep")).is_ok());
+        assert!(Ntsc525::generations("worn", "standard = \"pal60\"\n", 1, 1, &sets("composite.enabled=true")).is_err());
         // an override of a table the file also has adds to it
         let file = "standard = \"pal\"\n[tape]\npasses = 2.0\n";
-        assert!(check_overrides::<Pal625>("worn", file, &sets("tape.defects_per_mm2=0.1"), 1).is_ok());
+        assert!(Pal625::generations("worn", file, 1, 1, &sets("tape.defects_per_mm2=0.1")).is_ok());
     }
 
     #[test]

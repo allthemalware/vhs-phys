@@ -71,7 +71,7 @@ pub fn apply_overrides(p: &Params, text: &str) -> Result<Params, String> {
         out.seed = s;
     }
     out.interference.seed = out.seed;
-    Ok(out)
+    check_standard(out)
 }
 
 /// Build parameters from an optional preset name and optional TOML text. A
@@ -91,8 +91,7 @@ pub fn build(preset: Option<&str>, text: &str, seed: u64) -> Result<Params, Stri
     if let Some(toml::Value::Integer(s)) = table.get("seed") {
         p.seed = *s as u64;
     }
-    let p = apply_overrides(&p, text)?;
-    check_standard(p)
+    apply_overrides(&p, text)
 }
 
 /// What this engine can play: the 625-line engine records and plays PAL only, into a PAL

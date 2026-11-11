@@ -9,8 +9,40 @@ use std::fs::{File, OpenOptions};
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use vhsphys_core::audio::AudioProcessor;
-use vhsphys_core::pipeline::Params;
+
+/// A physical audio processor (from either the 525-line or 625-line engine).
+pub trait AudioStage {
+    type Params;
+    fn new(params: &Self::Params, rate: f64, channels: usize) -> Self;
+    fn latency(&self) -> usize;
+    fn process(&mut self, interleaved: &[f32], start: i64) -> Vec<f32>;
+}
+
+impl AudioStage for vhsphys_core::ntsc::audio::AudioProcessor {
+    type Params = vhsphys_core::ntsc::pipeline::Params;
+    fn new(params: &Self::Params, rate: f64, channels: usize) -> Self {
+        Self::new(params, rate, channels)
+    }
+    fn latency(&self) -> usize {
+        self.latency()
+    }
+    fn process(&mut self, interleaved: &[f32], start: i64) -> Vec<f32> {
+        self.process(interleaved, start)
+    }
+}
+
+impl AudioStage for vhsphys_core::pal::audio::AudioProcessor {
+    type Params = vhsphys_core::pal::pipeline::Params;
+    fn new(params: &Self::Params, rate: f64, channels: usize) -> Self {
+        Self::new(params, rate, channels)
+    }
+    fn latency(&self) -> usize {
+        self.latency()
+    }
+    fn process(&mut self, interleaved: &[f32], start: i64) -> Vec<f32> {
+        self.process(interleaved, start)
+    }
+}
 
 /// Sample rate of the processed sound.
 pub const RATE: u32 = 48_000;
@@ -66,8 +98,8 @@ impl Drop for TempFile {
 }
 
 /// One generation of the sound: its processor and the output samples still to be dropped.
-struct Stage {
-    proc: AudioProcessor,
+struct Stage<P: AudioStage> {
+    proc: P,
     /// Absolute sample index of the next input frame.
     pos: i64,
     /// Output frames still to discard: the first `latency()` frames hold the empty tape.
@@ -76,17 +108,17 @@ struct Stage {
 
 /// The generations of the sound in series, each one compensated for its own latency, so
 /// every generation receives and returns a stream aligned with the absolute sample index.
-struct SoundChain {
-    stages: Vec<Stage>,
+struct SoundChain<P: AudioStage> {
+    stages: Vec<Stage<P>>,
     channels: usize,
 }
 
-impl SoundChain {
-    fn new(params: &[Params], channels: usize, start: i64) -> Self {
+impl<P: AudioStage> SoundChain<P> {
+    fn new(params: &[P::Params], channels: usize, start: i64) -> Self {
         let stages = params
             .iter()
             .map(|p| {
-                let proc = AudioProcessor::new(p, RATE as f64, channels);
+                let proc = P::new(p, RATE as f64, channels);
                 let skip = proc.latency();
                 Stage { proc, pos: start, skip }
             })
@@ -200,7 +232,7 @@ fn read_full(r: &mut impl Read, buf: &mut [u8]) -> Result<usize> {
 /// generation) and write the result to a temporary WAV file. `t0` must be the programme
 /// time of the first video frame, so the sound starts in sync with the picture and the same
 /// stretch of tape sounds the same whatever the start.
-pub fn render(ffmpeg: &str, input: &Path, t0: f64, duration: Option<f64>, channels: usize, params: &[Params]) -> Result<TempFile> {
+pub fn render<P: AudioStage>(ffmpeg: &str, input: &Path, t0: f64, duration: Option<f64>, channels: usize, params: &[P::Params]) -> Result<TempFile> {
     let mut cmd = Command::new(ffmpeg);
     cmd.args(["-v", "error"]);
     if t0 > 0.0 {
@@ -217,7 +249,7 @@ pub fn render(ffmpeg: &str, input: &Path, t0: f64, duration: Option<f64>, channe
     let (tmp, file) = TempFile::create("vhsphys-sound", "wav")?;
     let result = (|| -> Result<()> {
         let mut wav = WavWriter::new(file, channels)?;
-        let mut chain = SoundChain::new(params, channels, (t0 * RATE as f64).round() as i64);
+        let mut chain = SoundChain::<P>::new(params, channels, (t0 * RATE as f64).round() as i64);
         let frame_bytes = 4 * channels;
         let mut raw = vec![0u8; BLOCK * frame_bytes];
         let mut block = Vec::with_capacity(BLOCK * channels);
@@ -249,7 +281,8 @@ pub fn render(ffmpeg: &str, input: &Path, t0: f64, duration: Option<f64>, channe
 #[cfg(test)]
 mod tests {
     use super::*;
-    use vhsphys_core::config;
+    use vhsphys_core::ntsc::audio::AudioProcessor;
+    use vhsphys_core::ntsc::config;
 
     /// Splitting the input into blocks must not change the sound, and the latency
     /// compensation must return exactly as many frames as went in, for any number of
@@ -261,11 +294,11 @@ mod tests {
         let frames = 30_000;
         let x: Vec<f32> = (0..frames * ch).map(|i| 0.3 * ((i / ch) as f32 * 0.05).sin()).collect();
 
-        let mut whole = SoundChain::new(&params, ch, 1234);
+        let mut whole = SoundChain::<AudioProcessor>::new(&params, ch, 1234);
         let mut a = whole.push(&x);
         a.extend(whole.finish());
 
-        let mut split = SoundChain::new(&params, ch, 1234);
+        let mut split = SoundChain::<AudioProcessor>::new(&params, ch, 1234);
         let mut b = Vec::new();
         for part in x.chunks(7_001 * ch) {
             b.extend(split.push(part));
@@ -285,10 +318,10 @@ mod tests {
         let (frames, k) = (60_000, 20_000);
         let x: Vec<f32> = (0..frames * ch).map(|i| 0.3 * ((i / ch) as f32 * 0.05).sin()).collect();
 
-        let mut whole = SoundChain::new(&params, ch, 0);
+        let mut whole = SoundChain::<AudioProcessor>::new(&params, ch, 0);
         let mut a = whole.push(&x);
         a.extend(whole.finish());
-        let mut late = SoundChain::new(&params, ch, k as i64);
+        let mut late = SoundChain::<AudioProcessor>::new(&params, ch, k as i64);
         let mut b = late.push(&x[k * ch..]);
         b.extend(late.finish());
 
