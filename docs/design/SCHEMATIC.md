@@ -55,10 +55,10 @@ The circuit page divides the `1180 x 620 px` canvas into five vertical columns s
 | Column | X (px) | Width (px) | Blocks (`y .. y+h`) | Control row `x, w` |
 |---|---|---|---|---|
 | 1 | 20 | 200 | `source` (`40..236`), `record_deck` (`252..520`) | `x: 26, w: 188` |
-| 2 | 240 | 224 | `cassette` (`40..520`) | `x: 246, w: 212` |
+| 2 | 240 | 224 | `camera` (`40..180`), `cassette` (`196..571`) | `x: 246, w: 211 / 212` |
 | 3 | 484 | 200 | `head_drum` (`40..284`), `transport` (`300..520`) | `x: 490, w: 188` |
 | 4 | 704 | 200 | `power` (`40..284`), `output` (`344..520`) | `x: 710, w: 188` |
-| 5 | 924 | 236 | `tv` (`40..400`) + `VIDEO` bus (`424`) + legend (`450..530`) | none (preview screen) |
+| 5 | 924 | 236 | `tv` (`40..400`) + `VIDEO` bus (`424`) + legend (`450..530`) | `x: 930, w: 224` (`STANDARD`) |
 
 - **Vertical rhythm**: Stacked blocks in columns 1 and 3 are separated by a `16 px` gutter; in column 4, `power` (`40..284`) aligns its bottom edge and lower three control rows (`186, 208, 230`) with `head_drum` (`40..284`). Every block reserves its top `28 px` for the title header and at least `32 px` at the bottom for its caption.
 - **Control rows**: Each row is `18 px` tall (`16 px` text plus `1 px` gauge line) on a `22 px` vertical pitch (`4 px` clear between rows), aligned to `block.x + 6` and `block.x + block.w - 6`.
@@ -69,6 +69,7 @@ The circuit page divides the `1180 x 620 px` canvas into five vertical columns s
 | Glyph | Physical part depicted | Block | Adjacent controls |
 |---|---|---|---|
 | `source_gate` | 35 mm 4:3 film aperture with sprocket holes, lens reticle, and 1 Vpp sync step waveform | `source` | `PRESET`, `SEED` |
+| `pickup_tube` | Camera pickup tube showing lens, photoconductive target, deflection yoke, and electron gun | `camera` | `TUBE`, `IRIS` |
 | `rec_deck` | Top view of VCR cassette throat, `REC` counter window, `FM MOD` modulator, and record head amp | `record_deck` | `REC AGE`, `REC TEMP` |
 | `dub_loop` | Coaxial dubbing input jack and `COPY N+1` cascade feedback loop (`DUB`) | `record_deck` | `GENERATIONS` |
 | `cassette` | 188 x 104 mm VHS shell (`1.86:1`) with turning supply/take-up reels, window, write-protect tab, and `T-120 VHS` label | `cassette` | `SPEED`, `PLAYS`, `POSITION` |
@@ -89,6 +90,10 @@ The circuit page divides the `1180 x 620 px` canvas into five vertical columns s
 - `audio` (`SOUND`): Linear edge-track audio path (`w_audio`) exiting the bottom of `cassette` (`x = 352`), running along the `y = 546` raceway, and entering the bottom of `output` (`x = 760`).
 - `dub` (`DUB`): Multi-generation copy loop (`w_dub`) exiting the bottom of `output` (`x = 848`), running left along `y = 574` outside the audio bus, and re-entering the bottom of `record_deck` (`x = 120`) directly below `GENERATIONS`.
 - `power`: Supply rails (`w_mech`, `w_power_out`) carrying regulated DC and capacitor ripple from `power` left into `head_drum` (`y = 100`) and down from `y = 284` into `output` (`x = 804, y = 344`).
+
+### Camera block and standard labels
+
+The `camera` block sits at the top of column 2, between the input `source` and the recording deck, modelling camera pickup tube lag and highlight smearing (`TUBE`, `IRIS`) with a video feed (`w_camera`) into the recorder. In the `tv` block, `STANDARD` selects `ntsc`, `pal`, or `pal60`. The technical spec labels along the right column and top header switch dynamically using `when: {"standard": [...]}` to display the exact parameters of the active television standard: raster line count and frame rate, luma FM carrier band (3.4-4.4 MHz vs 3.8-4.8 MHz), colour-under subcarrier (629 kHz vs 627 kHz), drum speed (1800 rpm vs 1500 rpm), and tape speeds (SP/EP vs SP/LP).
 
 ## Page 2: Outside the circuit (`python/vhsgui/schematic/outside/`)
 
