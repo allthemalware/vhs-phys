@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QGridLayout,
@@ -84,6 +85,10 @@ LEFT_MIN_WIDTH = 340  # the controls scroll below this width instead of squeezin
 PREVIEW_MIN_SIZE = (320, 200)
 PREVIEW_BACKGROUND = "#141414"
 DETACHED_PREVIEW_SIZE = (760, 520)  # default size of the detached preview window
+ABOUT_DIALOG_SIZE = (560, 440)  # dimensions of the about dialog
+ABOUT_TITLE = "About vhs-phys"
+KOFI_URL = "https://ko-fi.com/allthemalware"
+GITHUB_URL = "https://github.com/allthemalware/vhs-phys"
 ERROR_STYLE = "color: #c0392b;"
 
 POLL_MS = 100  # how often running jobs are looked at
@@ -350,6 +355,62 @@ class DetachedPreviewWindow(QWidget):
     def closeEvent(self, event: QCloseEvent) -> None:
         self._main._dock_preview()
         event.accept()
+
+
+class AboutDialog(QDialog):
+    """Information dialog presenting the physical simulation details, links, and support options."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("aboutDialog")
+        self.setWindowTitle(ABOUT_TITLE)
+        self.setFixedSize(*ABOUT_DIALOG_SIZE)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 20, 20, 16)
+        layout.setSpacing(12)
+
+        header = QLabel("<h2>vhs-phys</h2>")
+        header.setObjectName("aboutHeader")
+        layout.addWidget(header)
+
+        subtitle = QLabel("<b>A physical model of VHS recording, tape transport, and RF playback</b>")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        body_text = (
+            "<p>A first-principles simulation of the complete helical-scan tape chain:</p>"
+            "<ul>"
+            "<li><b>RF recording:</b> Direct FM luminance synthesis, colour-under heterodyne downconversion, and sub-sample magnetic transition timing.</li>"
+            "<li><b>Tape &amp; head physics:</b> Spacing loss (Wallace law), self-demagnetisation, head pole-tip wear, azimuth crosstalk, and oxide dropouts.</li>"
+            "<li><b>Camera optics:</b> Vidicon, Plumbicon, Saticon, and Chalnicon pickup tube lag, target saturation, and highlight comet tails.</li>"
+            "<li><b>Standards:</b> Full raster processing for NTSC (525/29.97), PAL (625/25), and PAL-60.</li>"
+            "<li><b>Display:</b> CRT beam scanning, shadow mask, and phosphor persistence emulation.</li>"
+            "</ul>"
+        )
+        body = QLabel(body_text)
+        body.setWordWrap(True)
+        layout.addWidget(body)
+
+        links_layout = QHBoxLayout()
+        kofi_btn = QPushButton("Support on Ko-fi")
+        kofi_btn.setObjectName("kofiButton")
+        kofi_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(KOFI_URL)))
+        links_layout.addWidget(kofi_btn)
+
+        github_btn = QPushButton("GitHub Repository")
+        github_btn.setObjectName("githubButton")
+        github_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(GITHUB_URL)))
+        links_layout.addWidget(github_btn)
+
+        links_layout.addStretch(1)
+
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("closeAboutButton")
+        close_btn.clicked.connect(self.accept)
+        links_layout.addWidget(close_btn)
+
+        layout.addLayout(links_layout)
 
 
 @dataclass
@@ -619,6 +680,10 @@ class MainWindow(QMainWindow):
         self._mode_bar = QWidget()
         layout = QHBoxLayout(self._mode_bar)
         layout.setContentsMargins(0, 0, 0, 0)
+        self.about_button = QPushButton("About")
+        self.about_button.setObjectName("aboutButton")
+        self.about_button.clicked.connect(self.show_about_dialog)
+        layout.addWidget(self.about_button)
         layout.addStretch(1)
         self.panels_button = QPushButton("Panels")
         self.panels_button.setObjectName("panelsButton")
@@ -1564,6 +1629,10 @@ class MainWindow(QMainWindow):
         self.preview.setVisible(self._panels_area.isVisible())
         self._is_preview_detached = False
         self.popout_button.setText("Pop out")
+
+    def show_about_dialog(self) -> None:
+        dialog = AboutDialog(self)
+        dialog.exec()
 
     def _toggle_view(self) -> None:
         if self.processed_frames is None:
