@@ -164,8 +164,8 @@ fn pristine_chain_reproduces_the_colour_bars() {
     }
 }
 
-/// A static APC phase error: the PAL television keeps the hue and loses saturation by
-/// cos(phi); without the delay line, alternate lines go wrong in opposite directions.
+/// The television's colour reference 30 degrees off: the PAL set keeps the hue and loses
+/// saturation by cos(phi); without the delay line, alternate lines go wrong in opposite directions.
 #[test]
 fn a_phase_error_costs_saturation_not_hue_and_without_the_delay_line_shows_hanover_bars() {
     let input: Vec<Frame> = (0..5).map(|_| flat(ORANGE)).collect();
@@ -181,12 +181,12 @@ fn a_phase_error_costs_saturation_not_hue_and_without_the_delay_line_shows_hanov
         hue_sat((u / n, v / n))
     };
     let (h0, s0) = mean(&render("", &input, 2)[3]);
-    let (h1, s1) = mean(&render("[decode]\napc_offset_deg = 30.0\n", &input, 2)[3]);
+    let (h1, s1) = mean(&render("[decode]\ntv_phase_deg = 30.0\n", &input, 2)[3]);
     assert!(wrap_deg(h1 - h0).abs() < 6.0, "hue moved {h0} -> {h1}");
     let ratio = s1 / s0;
     assert!((ratio - (30f64).to_radians().cos()).abs() < 0.1, "saturation ratio {ratio}");
 
-    let simple = render("[decode]\napc_offset_deg = 30.0\ndelay_line = false\n", &input, 2);
+    let simple = render("[decode]\ntv_phase_deg = 30.0\ndelay_line = false\n", &input, 2);
     let f = &simple[3];
     let (mut alt, mut n) = (0.0, 0.0);
     for y in (100..460).step_by(2) {

@@ -75,19 +75,19 @@ fn pal60_reproduces_the_colour_bars() {
     }
 }
 
-/// The same static APC phase error on the same tape: an NTSC television shows it as a hue
-/// shift, a PAL television as a loss of saturation with the hue kept.
+/// The same tape into the same misadjusted set (its colour reference 30 degrees off): an NTSC
+/// set shows a hue shift (hence its tint control), a PAL set a loss of saturation with the hue kept.
 #[test]
 fn the_same_phase_error_is_a_hue_shift_in_ntsc_and_a_saturation_loss_in_pal60() {
     let input: Vec<Frame> = (0..5).map(|_| flat(ORANGE)).collect();
     let rows = 60..420;
     let (h0, s0) = hue_sat(&render("", &input)[3], rows.clone());
-    let (hn, sn) = hue_sat(&render("[decode]\napc_offset_deg = 30.0\n", &input)[3], rows.clone());
+    let (hn, sn) = hue_sat(&render("[decode]\ntv_phase_deg = 30.0\n", &input)[3], rows.clone());
     assert!((wrap_deg(hn - h0).abs() - 30.0).abs() < 6.0, "NTSC hue {h0} -> {hn}");
     assert!((sn / s0 - 1.0).abs() < 0.1, "NTSC saturation {s0} -> {sn}");
 
     let (hp0, sp0) = hue_sat(&render("standard = \"pal60\"\n", &input)[3], rows.clone());
-    let (hp, sp) = hue_sat(&render("standard = \"pal60\"\n[decode]\napc_offset_deg = 30.0\n", &input)[3], rows.clone());
+    let (hp, sp) = hue_sat(&render("standard = \"pal60\"\n[decode]\ntv_phase_deg = 30.0\n", &input)[3], rows.clone());
     assert!(wrap_deg(hp0 - h0).abs() < 6.0, "PAL-60 without error moved the hue {h0} -> {hp0}");
     assert!(wrap_deg(hp - hp0).abs() < 6.0, "PAL-60 hue {hp0} -> {hp}");
     let ratio = sp / sp0;
@@ -97,7 +97,7 @@ fn the_same_phase_error_is_a_hue_shift_in_ntsc_and_a_saturation_loss_in_pal60() 
 #[test]
 fn pal60_without_the_delay_line_shows_hanover_bars() {
     let input: Vec<Frame> = (0..5).map(|_| flat(ORANGE)).collect();
-    let f = &render("standard = \"pal60\"\n[decode]\napc_offset_deg = 30.0\ndelay_line = false\n", &input)[3];
+    let f = &render("standard = \"pal60\"\n[decode]\ntv_phase_deg = 30.0\ndelay_line = false\n", &input)[3];
     let (mut alt, mut n) = (0.0, 0.0);
     for y in (60..420).step_by(2) {
         let (ua, va) = row_uv(f, y);

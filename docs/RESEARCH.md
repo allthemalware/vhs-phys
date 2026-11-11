@@ -38,6 +38,39 @@ against real captures by another project, **[svc]** service literature,
 | FM audio carriers | 1.3 / 1.7 MHz (NTSC Hi-Fi) | vhs-decode [meas] |
 | Typical RF bandwidth | 6-7 MHz wide for PAL VHS | vhs-decode wiki [meas] |
 
+### 1.1 625-line PAL VHS (the `pal` engine, `consts_pal.rs`)
+
+| Parameter | Value | Source |
+|---|---|---|
+| Raster | 625 lines, 50 fields/s, fH = 15 625 Hz; 0.7 V picture, 0.3 V sync, no setup | ITU-R BT.470 / BT.1700 [std] |
+| Line timing | sync 4.7 us, burst 5.6 us after sync for 10 cycles of 4.433 MHz, active 10.5..62.5 us (52 us) | BT.470 [std] |
+| Vertical interval | 5 equalising, 5 broad, 5 equalising half lines; PAL line 1 opens with the broad pulses | BT.470 [std] |
+| Burst | +/-135 deg (swinging with the V switch), 0.3 V p-p | BT.470 [std] |
+| Drum, head speed | 62 mm at 25 rev/s = 4.87 m/s | [derived] |
+| Tape speed, track pitch | SP 23.39 mm/s, 49 um; LP half; no EP in the format | IEC 60774-1 via service literature [std] |
+| Track angle | 5 deg 57' 50.3" moving (5 deg 56' 7.4" stationary) | [derived] from the stationary angle, matches the published figure |
+| Track alignment | tape advance per field 467.8 um = 1.5 H of head travel (467.5 um) | [derived] |
+| Luma FM | sync tip 3.8 MHz, white 4.8 MHz (1 MHz per volt) | vhs-decode `format_defs/vhs.py` [meas] |
+| Emphasis | 1.3 us as NTSC; ratio and clip levels as NTSC | vhs-decode [meas]; [est] |
+| Colour-under | (40 + 1/8) fH = 626.953 kHz | vhs-decode ("40H + 1953") [meas] |
+| Chroma rotation | channel 1 none, channel 2 -90 deg per line (`PAL_ROTATION = [0, -1]`) | vhs-decode [meas] |
+| Deck chroma comb | 2H (crosstalk turns -90 deg per line relative to the wanted signal; the V switch flips every line) | [derived] |
+
+### 1.2 Camera pickup tubes (`tube.rs`)
+
+| Parameter | Value | Source |
+|---|---|---|
+| Lag definitions | decay: residual % of the signal 60 and 200 ms after the light is cut (after 5 s of light); build-up: % of the final signal 60 and 200 ms after (after 10 s of dark); at 50 Hz | Philips T10 1985, General section H [data] |
+| Lag, XQ1020 R/G/B, low key, Is/Ib = 20/300 nA | build-up 60 ms 85/95/70 %; decay 60 ms 12/10/15 %, 200 ms 4/3.5/5 % | Philips T10 [data] |
+| Lag, XQ1410 (internal light bias 3/2/3.5 nA) | build-up 98/98/95 %; decay 60 ms 8/7/11 %, 200 ms 3/2/3.5 % | Philips T10 [data] |
+| Lag, XQ1520 (ACT gun) | build-up 85/95/70 %; decay 13/9/15 %, 3.5/3/5.5 % | Philips T10 [data] |
+| Operating point | peak signal 300 nA (G), 150 nA (R, B); beam set to twice what peak white needs | Philips T10 [data] |
+| Transfer gamma, dark current, target voltage | 0.95 +/- 0.05; <= 1..3 nA; 45 V | Philips T10 [data] |
+| Target | PbO 10-18 um thick, scanned area 12.8 x 17.1 mm; permittivity ~25 [est] => 3.2 nF | Philips T10 [data]; [est] |
+| Lag mechanisms | PbO photoconductive lag negligible; discharge lag set by layer capacitance and beam resistance, worst at low key, reduced by light bias | Philips T10, Plumbicon notes 1.4 [data] |
+| Comet tails, ACT | highlights beyond the beam current lose stabilisation and take several scans to recover; the ACT gun recharges them during line flyback (about 100 uA defocused beam) | Philips T10, notes 1.6 [data] |
+| CRT phosphor afterglow | P22 decays in microseconds (blue, green) to about a millisecond (red), far below one 20 ms field: not a source of visible trails | [lit] |
+
 ## 2. Playback signal path (what the deck does)
 
 From Beeching, *Domestic Videocassette Recorders* (ch. 3, 10) [svc], the Backman
@@ -228,7 +261,7 @@ differential phase/gain from carrier-dependent head response.
 
 ## 6. Not modelled in this prototype (next steps)
 
-PAL/SECAM and S-VHS, LP/EP track geometry, linear audio and Hi-Fi audio, the
+SECAM and S-VHS, composite PAL, the PAL LP record rules, Bruch burst blanking, LP/EP track geometry, linear audio and Hi-Fi audio, the
 luma noise canceller of HQ decks (SP, playback only) and S-VHS sub-emphasis, tape
 print-through, a full Jiles-Atherton record model, detailed head contour effect,
 and an interlaced 59.94 fps output mode.
@@ -245,6 +278,10 @@ and an interlaced 59.94 fps output mode.
 - Capacitor lifetime (10 C rule), Chemi-Con FAQ, https://www.chemi-con.co.jp/en/faq/detail.php?id=29BDBH5
 - RepairFAQ VCR notes, https://www.repairfaq.org/sam/vcrfaq.htm
 - ntsc-rs (signal-level VHS/NTSC effect, for comparison), https://github.com/valadaptive/ntsc-rs
+- vhs-decode PAL VHS parameters, https://github.com/oyvindln/vhs-decode/blob/vhs_decode/vhsdecode/format_defs/vhs.py
+- ITU-R BT.470 / BT.1700, conventional analogue television systems (625-line timing and levels)
+- Philips Data Handbook T10, Plumbicon camera tubes and accessories, 1985, https://frank.pocnet.net/other/Philips/elcoma/AdK/Philips_ElectronTubes_T10_PlumbiconCameraTubes_more_1985_FP_AdK.pdf
+- BBC Engineering Training information sheet, *The Plumbicon camera tube*, https://www.bbceng.info/additions/2020/ETD_info_sheets/Video/Cameras%20&%20Monitors/ETD_Info_Sheet_XXX_The%20Plumbicon%20Camera%20Tube.pdf
 
 ## 8. Findings from building and validating the model
 
