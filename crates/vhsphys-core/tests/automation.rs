@@ -59,3 +59,20 @@ frame, param, value, interp
     let out = Chain::run_with_automation(vec![p], &input, schedule);
     assert_eq!(out.len(), 6);
 }
+
+#[test]
+fn automated_crt_magnet_moves_deflection_around_screen() {
+    let p = config::build(Some("pristine"), "", 4).unwrap();
+    let mut schedule = AutomationSchedule::new();
+    // Move magnet around the tube perimeter: angle sweeps 0 to 180 degrees at 18 cm distance
+    schedule.set_track("crt_magnet_angle_deg", AutomationTrack::linear_ramp(0.0, 0.0, 5.0, 180.0));
+    schedule.set_track("crt_magnet_cm", AutomationTrack::constant(18.0));
+
+    let input: Vec<Frame> = (0..6).map(|_| test_pattern()).collect();
+    let out = Session::run_with_automation(p, &input, schedule);
+    assert_eq!(out.len(), 6);
+
+    // Frame at angle 0 vs frame at angle 180 will have displaced phosphors on opposite edges
+    let diff = mean_pixel_difference(&out[1], &out[5]);
+    assert!(diff > 5.0, "moving magnet should distort different screen regions: diff = {diff}");
+}

@@ -21,7 +21,7 @@ use super::electronics::{process_segment, DeckParams};
 use super::format::TapeSpeed;
 use super::head::*;
 use super::interference::{head_signal_gain, rf_pickup_add};
-use crate::interference_params::InterferenceParams;
+use crate::interference_params::{InterferenceParams, MagnetKind};
 use super::mech::{Mech, MechParams};
 use super::record::*;
 use crate::rng::Rng;
@@ -547,10 +547,35 @@ impl Session {
         if bbs.is_empty() {
             return vec![];
         }
-        let itf = &self.params.interference;
+        let base_itf = &self.params.interference;
+        let auto = self.automation.clone();
         bbs.par_iter()
             .enumerate()
-            .map(|(idx, bb)| crt::scan_to_frame(bb, k0 + idx as i64, itf))
+            .map(|(idx, bb)| {
+                let k = k0 + idx as i64;
+                if let Some(schedule) = auto.as_deref() {
+                    let mut itf = base_itf.clone();
+                    let mut changed = false;
+                    if let Some(angle) = schedule.eval("crt_magnet_angle_deg", k as f64) {
+                        itf.crt.magnet.angle_deg = angle;
+                        changed = true;
+                    }
+                    if let Some(dist_cm) = schedule.eval("crt_magnet_cm", k as f64) {
+                        itf.crt.magnet.rho_m = dist_cm / 100.0;
+                        changed = true;
+                    }
+                    if let Some(z_cm) = schedule.eval("crt_magnet_z_cm", k as f64) {
+                        itf.crt.magnet.z_m = z_cm / 100.0;
+                        changed = true;
+                    }
+                    if changed && itf.crt.magnet.kind == MagnetKind::Absent {
+                        itf.crt.magnet.kind = MagnetKind::Neodymium;
+                    }
+                    crt::scan_to_frame(bb, k, if changed { &itf } else { base_itf })
+                } else {
+                    crt::scan_to_frame(bb, k, base_itf)
+                }
+            })
             .collect()
     }
 

@@ -182,6 +182,9 @@ impl AutomationSchedule {
             "tension" => "tension_offset",
             "crinkle" => "crinkle_density",
             "magnet" => "head_magnet",
+            "crt_magnet_angle" | "magnet_angle" => "crt_magnet_angle_deg",
+            "crt_magnet_distance" | "magnet_distance" | "crt_magnet_dist" => "crt_magnet_cm",
+            "crt_magnet_z" | "magnet_z" => "crt_magnet_z_cm",
             _ => return None,
         };
         self.tracks.get(alias).and_then(|t| t.eval(frame))
