@@ -364,3 +364,44 @@ scripts/interference.sh  regenerate the interference images
 [PolyForm Noncommercial 1.0.0](LICENSE): free for any noncommercial purpose
 (personal, research, hobby, education, nonprofit); commercial use needs a
 separate licence from the author.
+
+## Roadmap
+
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) for full notes and physics references.
+
+### Currently being worked on
+* **Composite PAL**: 4.43 MHz PAL composite path (PAL 1H/2H comb filter) for `pal` and `pal60` standards.
+* **PAL deck tuning**: Playback equaliser and head resonance scaled to the PAL carrier; 58 um track pitch reference for CNR.
+* **Camera tube limits**: Build-up lag, light-bias tail, target saturation fitting at 50 Hz, and blooming/burn-in models (`docs/CAMERA.md`).
+* **Engine-generic audio I/O**: Generic CLI audio I/O across 525-line and 625-line engines and standard verification checks.
+* **Schematic UI integration**: Television standard, camera tube selection, and conditional spec displays in the PySide6 schematic view.
+
+### Near-term physical modelling
+* **HQ non-linear noise reduction** (SP only): Diode limiter circuit on pre-emphasised signal with inverse filter on playback.
+* **Magnetic recording beyond the relay**: Switching-field distribution / Preisach hysteresis ($M(H) = M_s \tanh((H \pm H_c)/\Delta H_c)$).
+* **Head pole-tip contour ("head bumps")**: Edge flux coupling below 1 MHz affecting colour-under (629 kHz) and audio.
+* **Closed-loop chroma PLL**: Analog phase detector, loop filter, and burst-locked VCO for realistic unlock smear and head-switch phase jumps.
+* **True 59.94 / 50 fps field-sequential input**: Independent field-to-pass mapping for genuine moving interlace comb filtering.
+* **Hi-Fi depth-multiplex audio**: Dual FM audio carriers (1.3 / 1.7 MHz) with separate rotating head pair, switching buzz, and fallback muting.
+
+### Long-term goals
+* **Parameter automation**: Time-varying keyframes and automation curves in the standalone app/CLI; per-frame parameter updates in preparation for plugin automation.
+* **Cleaner UI**: Refined PySide6 desktop interface, grouped physical controls, dark schematic dock layout, and real-time parameter validation.
+* **Walkthrough shell version**: Interactive terminal wizard (`vhsphys wizard`) to guide options without verbose command lines.
+* **Separate viewing window**: Detachable / floating preview viewport for multi-monitor workflows.
+* **Support button & easter eggs**: Period-authentic deck easter eggs (dew sensor trip, tape eject jam, retro OSD modes).
+
+### Ultra-long-term goals
+* **GPU compute architecture**: Compute shaders (WGPU / Vulkan / Metal / DirectX) for Lorentzian pulse rendering, delay-line discriminator, and RF filters to achieve real-time ($\ge 24$ fps) playback.
+* **VFX and NLE plugins**: OpenFX (DaVinci Resolve, Nuke, Vegas), Adobe After Effects / Premiere Pro, and Blender compositor integration.
+* **Cross-platform release binaries**: Automated CI builds for macOS (`x86_64` and `aarch64` Apple Silicon) and Windows (`x86_64`).
+* **Android APK**: Mobile port using NDK and Vulkan compute for retro camera emulation and video processing.
+* **Expanded media formats**: Analog formats (Betamax, Video8, Hi8, U-matic) and digital tape simulation (MiniDV / DVCAM macroblocking and dropouts).
+* **Multi-generation bounce simulation**: Heterogeneous generational dubbing chains (e.g. Camera tube -> NTSC VHS -> Composite dub -> PAL deck -> CRT).
+* **Real-world tape degradation datasets**: Community RF captures (`vhs-decode`) and measured deck responses to refine physical estimates.
+
+## Support
+
+[![Ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/T5F122USRI)
+
+<script type='text/javascript' src='https://storage.ko-fi.com/cdn/widget/Widget_2.js'></script><script type='text/javascript'>kofiwidget2.init('Keep the chaos coming', '#699c82', 'T5F122USRI');kofiwidget2.draw();</script>
