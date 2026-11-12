@@ -374,7 +374,7 @@ Still open:
 - Chunk interface for sources and outputs; branching graphs.
 - The converter's response is tested at the fixed points, for flat fields, still vertical detail, whole-field temporal change, field difference and a moving edge. Zone plates, multiburst through the horizontal filter in MHz, burst-phase sweeps and a measured A/V marker test of section 8 are not written.
 - The documentation drift noted in section 10 was not reconciled beyond the pages this work touched.
-- Found while testing, not changed: the 625-line engine plays colour bars about 11 % more saturated than recorded, and again for each further 625-line generation (75 % magenta 191 -> 205 -> 223). The converter itself is exact on the same bars, so the excess in a mixed rack is the 625-line decks'.
+- Found while testing, not changed: the 625-line engine plays colour bars about 6 % more saturated than recorded and 7 % more for each further 625-line generation (`tests/pal_saturation.rs`). The converter itself is exact on the same bars, so the excess in a mixed rack is the 625-line decks'.
 
 ## References
 
