@@ -13,6 +13,9 @@
 //! `vhsphys_core::ntsc::pipeline::Session`. What needs no raster constant is compiled once
 //! and shared by both engines: `dsp`, `frame`, `interference_params`, `rng`, `standard`
 //! and `tube`.
+//!
+//! Decks of the two engines are joined by `rack`: tagged signals (`signal`), explicit links and
+//! a standards converter (`convert`, `aperture`); see `docs/BOUNCE.md`.
 
 // Shared by both engines: nothing in them depends on the raster.
 pub mod automation;
@@ -22,6 +25,13 @@ pub mod interference_params;
 pub mod rng;
 pub mod standard;
 pub mod tube;
+
+// What joins decks of either engine. These modules name both engines (`crate::ntsc`,
+// `crate::pal`) and hold no raster constant of their own.
+pub mod aperture;
+pub mod convert;
+pub mod rack;
+pub mod signal;
 
 /// Declares every engine module, each from the one source file, inside the module that calls
 /// it. The argument is the constants file the engine is built against. Engine files reach each

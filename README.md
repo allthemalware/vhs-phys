@@ -229,6 +229,20 @@ Set with `--generations N` (1 to 8, default 1) or in the window with "Generation
 
 ![source, generation 1, 2, 3](docs/img/features_generations_fractal.jpg)
 
+Generations need not share a television standard. A config file with `[[generation]]` tables describes a rack: each generation names its own standard and every pair of neighbours is joined by a `[[link]]` (the direct reference hand-over, separate Y/C, composite, or a standards converter). A change between 625/50 and 525/59.94 needs a `standards_converter` link with a named profile; without one the run is refused before anything is decoded. The converter works on the signal's fields at their true times with the four-field apertures of BBC Research Department Report 1984/20, and only the last deck's output reaches the picture tube (details in `docs/BOUNCE.md`).
+
+```toml
+[[generation]]
+standard = "pal"
+
+[[generation]]
+standard = "ntsc"
+
+[[link]]
+type = "standards_converter"
+profile = "bbc_four_field"
+```
+
 ### Composite output
 
 Off by default (S-Video style). Enable with `--set composite.enabled=true --set composite.decoder=notch|comb1h|comb2h` or with the window's "Signal" menu. The deck's Y/C is summed onto the NTSC subcarrier and separated again like a TV does: a notch leaks fine luma detail into colour (rainbow), a comb leaks vertical colour edges into luma (hanging dots), and the dot pattern crawls from frame to frame (details in `docs/COMPOSITE.md`).
@@ -352,7 +366,7 @@ python/vhsgui         desktop front end (PySide6) for the command line tool
 python/vhslab         reference physics, validation report, tuning and plotting tools
 docs/                 RESEARCH, ARCHITECTURE, ROADMAP, PLUGIN, PERFORMANCE, COMPARISON,
                       PHYSICAL_MODELLING_RESEARCH, TAPE_SPEEDS, COMPOSITE, AUDIO, INTERFERENCE,
-                      PAL, CAMERA, design/, images
+                      PAL, CAMERA, BOUNCE, design/, images
 scripts/gallery.sh    regenerate the gallery images
 scripts/features.sh   regenerate the feature images
 scripts/interference.sh  regenerate the interference images
@@ -396,7 +410,7 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for full notes and physics references.
 * **Cross-platform release binaries**: Automated CI builds for macOS (`x86_64` and `aarch64` Apple Silicon) and Windows (`x86_64`).
 * **Android APK**: Mobile port using NDK and Vulkan compute for retro camera emulation and video processing.
 * **Expanded media formats**: Analog formats (Betamax, Video8, Hi8, U-matic) and digital tape simulation (MiniDV / DVCAM macroblocking and dropouts).
-* **Multi-generation bounce simulation**: Heterogeneous generational dubbing chains (e.g. Camera tube -> NTSC VHS -> Composite dub -> PAL deck -> CRT).
+* **Multi-generation bounce simulation**: racks of decks of different standards with explicit links and a reference standards converter are in (`docs/BOUNCE.md`); still to come are cable and connector profiles, measured deck and converter profiles and previews of intermediate generations.
 * **Real-world tape degradation datasets**: Community RF captures (`vhs-decode`) and measured deck responses to refine physical estimates.
 
 ## Support

@@ -21,6 +21,8 @@ use vhsphys_core::config;
 use vhsphys_core::consts::MAINS_HZ_DEFAULT;
 use vhsphys_core::frame::Frame;
 use vhsphys_core::interference_params::{MagnetKind, PhoneMode, RadioMod};
+use vhsphys_core::rack::{Rack, RackPlan, StageParams};
+use vhsphys_core::signal::Raster;
 use vhsphys_core::standard::TvStandard;
 use vhsphys_core::{ntsc, pal};
 
@@ -261,6 +263,9 @@ struct RunArgs {
     /// JSON, TOML or CSV file with time-varying parameter automation curves (e.g. tracking offset drift, head clogging, iris exposure).
     #[arg(long, value_name = "FILE")]
     automate: Option<PathBuf>,
+    /// Write what a rack run was built from (generations, links, converter profiles, clocks) to this JSON file.
+    #[arg(long, value_name = "FILE")]
+    record: Option<PathBuf>,
     /// The ffmpeg program to run.
     #[arg(long, default_value = "ffmpeg")]
     ffmpeg: String,
@@ -433,6 +438,79 @@ macro_rules! engine {
 engine!(Ntsc525, ntsc, 30000 / 1001);
 engine!(Pal625, pal, 25 / 1);
 
+impl Playback for Rack {
+    fn push_frame(&mut self, f: &Frame) {
+        self.push(f)
+    }
+    fn finish_input(&mut self) {
+        self.finish()
+    }
+    fn frames_ready(&self) -> i64 {
+        self.ready()
+    }
+    fn play(&mut self, max_frames: usize) -> Vec<Frame> {
+        self.process(max_frames)
+    }
+    fn set_automation(&mut self, schedule: Option<vhsphys_core::automation::AutomationSchedule>) {
+        self.set_automation(schedule);
+    }
+}
+
+/// The sound of one generation of a rack, on the engine of that generation's deck. The sound
+/// is on one clock (the sample index of the programme) whatever the raster of the picture, so
+/// generations of different rasters follow one another without any retiming.
+enum RackAudio {
+    L525(ntsc::audio::AudioProcessor),
+    L625(pal::audio::AudioProcessor),
+}
+
+impl audio_io::AudioStage for RackAudio {
+    type Params = StageParams;
+    fn new(params: &Self::Params, rate: f64, channels: usize) -> Self {
+        match params {
+            StageParams::L525(p) => RackAudio::L525(ntsc::audio::AudioProcessor::new(p, rate, channels)),
+            StageParams::L625(p) => RackAudio::L625(pal::audio::AudioProcessor::new(p, rate, channels)),
+        }
+    }
+    fn latency(&self) -> usize {
+        match self {
+            RackAudio::L525(a) => a.latency(),
+            RackAudio::L625(a) => a.latency(),
+        }
+    }
+    fn process(&mut self, interleaved: &[f32], start: i64) -> Vec<f32> {
+        match self {
+            RackAudio::L525(a) => a.process(interleaved, start),
+            RackAudio::L625(a) => a.process(interleaved, start),
+        }
+    }
+}
+
+/// The frames ffmpeg gives to or takes from a run: the active picture of a raster and its frame rate.
+#[derive(Clone, Copy)]
+struct PictureFormat {
+    w: usize,
+    h: usize,
+    fps: (u32, u32),
+}
+
+impl PictureFormat {
+    fn of<E: Engine>() -> Self {
+        Self { w: E::ACTIVE_W, h: E::ACTIVE_H, fps: E::FPS }
+    }
+
+    fn of_raster(raster: Raster) -> Self {
+        match raster {
+            Raster::L525 => Self::of::<Ntsc525>(),
+            Raster::L625 => Self::of::<Pal625>(),
+        }
+    }
+
+    fn rate(&self) -> String {
+        format!("{}/{}", self.fps.0, self.fps.1)
+    }
+}
+
 /// Take the `--set` items for `key` out of `sets`: (those, the rest).
 fn take_key(sets: Vec<String>, key: &str) -> (Vec<String>, Vec<String>) {
     sets.into_iter().partition(|s| s.split_once('=').is_some_and(|(k, _)| k.trim() == key))
@@ -531,10 +609,49 @@ fn run(a: RunArgs) -> Result<()> {
     }
     sets.extend(a.sets.iter().cloned());
     let (text, sets, standard) = assemble_config(&file_text, &sets, a.standard)?;
+    // A config with `[[generation]]` tables describes a rack: each generation names its own
+    // standard, and the links between them are checked before anything is decoded.
+    if let Some(plan) = RackPlan::from_config(&a.preset, &text, a.seed, &sets).map_err(anyhow::Error::msg)? {
+        return run_rack(a, plan);
+    }
+    if a.record.is_some() {
+        bail!("--record writes the record of a rack; this config has no [[generation]] tables");
+    }
     if standard.is_625() {
         run_engine::<Pal625>(a, standard, &text, &sets)
     } else {
         run_engine::<Ntsc525>(a, standard, &text, &sets)
+    }
+}
+
+/// The size of the input and of the output (`--size`, or the input's).
+fn sizes(a: &RunArgs) -> Result<((usize, usize), (usize, usize))> {
+    let input = probe_size(&a.ffprobe, &a.input)?;
+    let output = match &a.size {
+        Some(s) => {
+            let (w, h) = s.split_once('x').context("--size must look like 1280x720")?;
+            (w.parse()?, h.parse()?)
+        }
+        None => input,
+    };
+    Ok((input, output))
+}
+
+/// The length of the picture in frames of the decoder's rate, which is what it is asked for.
+fn picture_frames(a: &RunArgs, fps: (u32, u32)) -> Result<Option<u64>> {
+    match a.duration {
+        Some(d) if d.is_finite() && d > 0.0 => Ok(Some(frames_in(d, fps))),
+        Some(_) => bail!("the duration must be more than zero seconds"),
+        None => Ok(None),
+    }
+}
+
+/// How long the sound has to be, seconds: no longer than the picture will be.
+fn sound_duration(a: &RunArgs, fps: (u32, u32)) -> Option<f64> {
+    let frames_s = a.frames.map(|n| n as f64 * fps.1 as f64 / fps.0 as f64);
+    match (a.duration, frames_s) {
+        (Some(d), Some(f)) => Some(d.min(f)),
+        (d, f) => d.or(f),
     }
 }
 
@@ -548,26 +665,13 @@ fn run_engine<E: Engine>(a: RunArgs, standard: TvStandard, text: &str, sets: &st
     };
     let stages = E::generations(&a.preset, text, a.seed, a.generations as usize, sets).map_err(anyhow::Error::msg)?;
 
-    let (iw, ih) = probe_size(&a.ffprobe, &a.input)?;
-    let (ow, oh) = match &a.size {
-        Some(s) => {
-            let (w, h) = s.split_once('x').context("--size must look like 1280x720")?;
-            (w.parse()?, h.parse()?)
-        }
-        None => (iw, ih),
-    };
+    let sizes = sizes(&a)?;
     let (fps_num, fps_den) = E::FPS;
-    let fps = format!("{fps_num}/{fps_den}");
     let is_image = has_extension(&a.output, &IMAGE_EXTENSIONS);
     // The tape, its defects and the timebase error are functions of the absolute frame index,
     // so rendering from `--start` gives the same picture as rendering the whole file.
     let start_frame = a.start.map_or(0, |s| (s * fps_num as f64 / fps_den as f64).round() as i64);
-    // The length of the picture in frames, which is what the decoder is asked for.
-    let picture_frames = match a.duration {
-        Some(d) if d.is_finite() && d > 0.0 => Some(frames_in(d, E::FPS)),
-        Some(_) => bail!("the duration must be more than zero seconds"),
-        None => None,
-    };
+    let picture_frames = picture_frames(&a, E::FPS)?;
 
     // ---- sound ----
     // Processed before the picture, into a temporary file the encoder reads as its sound.
@@ -580,119 +684,232 @@ fn run_engine<E: Engine>(a: RunArgs, standard: TvStandard, text: &str, sets: &st
         Some((channels, _)) if audio == AudioMode::Process => {
             let channels = channels.min(2);
             let t0 = start_frame as f64 * fps_den as f64 / fps_num as f64;
-            // no need to process sound past the last frame the picture will have
-            let frames_s = a.frames.map(|n| n as f64 * fps_den as f64 / fps_num as f64);
-            let duration = match (a.duration, frames_s) {
-                (Some(d), Some(f)) => Some(d.min(f)),
-                (d, f) => d.or(f),
-            };
             let stages_sound = if a.bypass { &[][..] } else { &stages[..] };
-            let sound = E::sound(&a.ffmpeg, &a.input, t0, duration, channels, stages_sound)?;
+            let sound = E::sound(&a.ffmpeg, &a.input, t0, sound_duration(&a, E::FPS), channels, stages_sound)?;
             eprintln!("sound: {channels} ch, {} Hz, processed", audio_io::RATE);
             Some(sound)
         }
         _ => None,
     };
 
-    // ---- decoder ----
-    let mut dec = Command::new(&a.ffmpeg);
-    dec.args(["-v", "error"]);
-    if let Some(s) = a.start {
-        dec.args(["-ss", &seek_arg(s)]);
-    }
-    dec.arg("-i").arg(&a.input);
-    if let Some(n) = picture_frames {
-        dec.args(["-t", &frames_arg(n, E::FPS)]);
-    }
-    dec.args(["-an", "-vf", &format!("fps={fps},scale={}:{}:flags=lanczos,format=rgb24", E::ACTIVE_W, E::ACTIVE_H), "-f", "rawvideo", "pipe:1"]);
-    let mut dec = dec.stdout(Stdio::piped()).spawn().context("starting ffmpeg (decoder)")?;
-    let mut dec_out = dec.stdout.take().unwrap();
-
-    // ---- encoder ----
-    let mut enc = Command::new(&a.ffmpeg);
-    enc.args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{}x{}", E::ACTIVE_W, E::ACTIVE_H), "-r", &fps, "-i", "pipe:0"]);
-    match (&sound, audio) {
-        (Some(sound), _) => {
-            sound.add_input(&mut enc);
-            enc.args(["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-shortest"]);
-        }
-        (None, AudioMode::Copy) => {
-            if let Some(s) = a.start {
-                enc.args(["-ss", &seek_arg(s)]);
-            }
-            enc.arg("-i").arg(&a.input);
-            if let Some(d) = a.duration {
-                enc.args(["-t", &d.to_string()]);
-            }
-            enc.args(["-map", "0:v", "-map", "1:a?", "-c:a", "aac", "-shortest"]);
-        }
-        _ => {}
-    }
-    // stills stay RGB (no 4:2:0 chroma subsampling); video is encoded as yuv420p
-    enc.args(["-vf", &format!("scale={ow}:{oh}:flags=bicubic,format={}", if is_image { "rgb24" } else { "yuv420p" })]);
-    if !is_image {
-        enc.args(["-c:v", "libx264", "-crf", &a.crf.to_string(), "-preset", "medium"]);
-    } else if !a.output.to_string_lossy().contains('%') {
-        // a single still: keep only the last frame written
-        enc.args(["-update", "1"]);
-    }
-    enc.arg(&a.output);
-    let mut enc = enc.stdin(Stdio::piped()).spawn().context("starting ffmpeg (encoder)")?;
-    let mut enc_in = enc.stdin.take().unwrap();
-
     let standard_note = if standard == TvStandard::Ntsc { String::new() } else { format!(" standard {}", standard.name()) };
-    eprintln!("preset '{}' seed {}{}  {}x{} -> {}x{}  ({})", a.preset, a.seed, standard_note, iw, ih, ow, oh, a.output.display());
-    let mut session = if a.bypass {
-        None
-    } else {
-        let mut chain = E::chain(stages, start_frame);
-        if automation.is_some() {
-            chain.set_automation(automation);
-        }
-        Some(chain)
+    let banner = format!("preset '{}' seed {}{}", a.preset, a.seed, standard_note);
+    let format = PictureFormat::of::<E>();
+    let pipe = Pipe { a: &a, source: format, output: format, sizes, picture_frames, sound, audio, banner, sound_seek: None };
+    if a.bypass {
+        return pipe.run(None, &E::bypass);
+    }
+    let pipe = pipe.start()?;
+    let mut chain = E::chain(stages, start_frame);
+    if automation.is_some() {
+        chain.set_automation(automation);
+    }
+    pipe.render(Some(&mut chain), &E::bypass)
+}
+
+/// Run a rack: generations that need not share a raster, joined by the links of the config.
+/// The decoder runs at the first generation's raster and the encoder at the last one's.
+fn run_rack(a: RunArgs, plan: RackPlan) -> Result<()> {
+    if a.bypass {
+        bail!("--bypass skips the decks; a rack ([[generation]] tables) is nothing but decks");
+    }
+    if a.generations != 1 {
+        bail!("the config's [[generation]] tables already give the generations; leave --generations out");
+    }
+    let automation = match &a.automate {
+        Some(path) => Some(vhsphys_core::automation::AutomationSchedule::from_file(path).map_err(|e| anyhow::anyhow!("loading automation file '{}': {e}", path.display()))?),
+        None => None,
     };
-    let t0 = Instant::now();
-    let (mut n_in, mut n_out) = (0usize, 0usize);
-    let limit = a.frames.unwrap_or(usize::MAX);
-    let mut frame = Frame::new(E::ACTIVE_W, E::ACTIVE_H);
-    let mut write = |f: &Frame, n_out: &mut usize| -> Result<()> {
-        enc_in.write_all(&f.rgb)?;
-        *n_out += 1;
-        if *n_out % 15 == 0 {
-            eprint!("\r  {} frames  {:.2} fps   ", n_out, *n_out as f64 / t0.elapsed().as_secs_f64());
+    let stage_params: Vec<StageParams> = plan.stages.iter().map(|s| s.params.clone()).collect();
+    let source = PictureFormat::of_raster(stage_params[0].raster());
+    // The programme starts at the source frame nearest to `--start`; every generation after
+    // the first starts at its own first frame at or after the one before.
+    let start_frame = a.start.map_or(0, |s| (s * source.fps.0 as f64 / source.fps.1 as f64).round() as i64);
+    let start = stage_params[0].raster().frame_time(start_frame);
+    let mut rack = Rack::new(plan, start).map_err(anyhow::Error::msg)?;
+    if automation.is_some() {
+        rack.set_automation(automation);
+    }
+    let output = PictureFormat::of_raster(rack.output_raster());
+    if let Some(path) = &a.record {
+        std::fs::write(path, serde_json::to_string_pretty(rack.record())?).with_context(|| format!("writing {}", path.display()))?;
+    }
+
+    let sizes = sizes(&a)?;
+    let is_image = has_extension(&a.output, &IMAGE_EXTENSIONS);
+    let picture_frames = picture_frames(&a, source.fps)?;
+
+    // ---- sound ----
+    // The picture's first output frame is the last generation's first frame, which can lie a
+    // fraction of a frame after the first source frame. The sound is cut to start at that
+    // instant, so it plays with the picture; its speed and pitch are untouched by a change of
+    // raster, and every generation's deck plays it in turn on the one programme clock.
+    let sound_start = rack.output_start_time();
+    let lead = sound_start.sub(start);
+    let input_sound = if is_image || a.audio == AudioMode::None { None } else { audio_io::probe(&a.ffprobe, &a.input)? };
+    let audio = if input_sound.is_some() { a.audio } else { AudioMode::None };
+    let sound = match input_sound {
+        Some((channels, _)) if audio == AudioMode::Process => {
+            let channels = channels.min(2);
+            let duration = sound_duration(&a, source.fps).map(|d| (d - lead.to_f64()).max(0.0));
+            let sound = audio_io::render::<RackAudio>(&a.ffmpeg, &a.input, sound_start.to_f64(), duration, channels, &stage_params).map(SoundFile)?;
+            eprintln!("sound: {channels} ch, {} Hz, processed, from {:.6} s", audio_io::RATE, sound_start.to_f64());
+            Some(sound)
         }
-        Ok(())
+        _ => None,
     };
-    while n_in < limit && read_frame(&mut dec_out, &mut frame)? {
-        n_in += 1;
-        match session.as_mut() {
-            Some(s) => {
-                s.push_frame(&frame);
-                while s.frames_ready() >= a.batch as i64 {
-                    for f in s.play(a.batch) {
-                        write(&f, &mut n_out)?;
+
+    eprint!("rack of {} generations:\n{}", stage_params.len(), rack.record().summary());
+    let banner = format!("preset '{}' seed {} {} -> {}", a.preset, a.seed, stage_params[0].raster().name(), rack.output_raster().name());
+    // copied sound is cut at the same instant as processed sound
+    let sound_seek = Some(sound_start.to_f64());
+    let pipe = Pipe { a: &a, source, output, sizes, picture_frames, sound, audio, banner, sound_seek };
+    pipe.run(Some(&mut rack), &|f: &Frame| f.clone())
+}
+
+/// The two ffmpeg processes of a run and what they are told: the decoder gives frames of
+/// `source`, the encoder takes frames of `output`.
+struct Pipe<'a> {
+    a: &'a RunArgs,
+    source: PictureFormat,
+    output: PictureFormat,
+    /// Sizes of the input file and of the output file.
+    sizes: ((usize, usize), (usize, usize)),
+    picture_frames: Option<u64>,
+    sound: Option<SoundFile>,
+    audio: AudioMode,
+    banner: String,
+    /// Where copied sound starts, seconds, when that is not `--start`.
+    sound_seek: Option<f64>,
+}
+
+/// A started pipe: both processes are running.
+struct RunningPipe<'a> {
+    a: &'a RunArgs,
+    dec: std::process::Child,
+    dec_out: std::process::ChildStdout,
+    enc: std::process::Child,
+    enc_in: std::process::ChildStdin,
+    source: PictureFormat,
+    /// The processed sound, which the encoder reads until the run ends.
+    _sound: Option<SoundFile>,
+}
+
+impl<'a> Pipe<'a> {
+    fn run(self, session: Option<&mut dyn Playback>, bypass: &dyn Fn(&Frame) -> Frame) -> Result<()> {
+        self.start()?.render(session, bypass)
+    }
+
+    fn start(self) -> Result<RunningPipe<'a>> {
+        let a = self.a;
+        let is_image = has_extension(&a.output, &IMAGE_EXTENSIONS);
+        let ((iw, ih), (ow, oh)) = self.sizes;
+
+        // ---- decoder ----
+        let mut dec = Command::new(&a.ffmpeg);
+        dec.args(["-v", "error"]);
+        if let Some(s) = a.start {
+            dec.args(["-ss", &seek_arg(s)]);
+        }
+        dec.arg("-i").arg(&a.input);
+        if let Some(n) = self.picture_frames {
+            dec.args(["-t", &frames_arg(n, self.source.fps)]);
+        }
+        dec.args(["-an", "-vf", &format!("fps={},scale={}:{}:flags=lanczos,format=rgb24", self.source.rate(), self.source.w, self.source.h), "-f", "rawvideo", "pipe:1"]);
+        let mut dec = dec.stdout(Stdio::piped()).spawn().context("starting ffmpeg (decoder)")?;
+        let dec_out = dec.stdout.take().unwrap();
+
+        // ---- encoder ----
+        let mut enc = Command::new(&a.ffmpeg);
+        enc.args(["-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", &format!("{}x{}", self.output.w, self.output.h), "-r", &self.output.rate(), "-i", "pipe:0"]);
+        match (&self.sound, self.audio) {
+            (Some(sound), _) => {
+                sound.add_input(&mut enc);
+                enc.args(["-map", "0:v", "-map", "1:a", "-c:a", "aac", "-shortest"]);
+            }
+            (None, AudioMode::Copy) => {
+                match (self.sound_seek, a.start) {
+                    (Some(t), _) if t > 0.0 => {
+                        enc.args(["-ss", &seek_arg(t)]);
+                    }
+                    (None, Some(s)) => {
+                        enc.args(["-ss", &seek_arg(s)]);
+                    }
+                    _ => {}
+                }
+                enc.arg("-i").arg(&a.input);
+                if let Some(d) = a.duration {
+                    enc.args(["-t", &d.to_string()]);
+                }
+                enc.args(["-map", "0:v", "-map", "1:a?", "-c:a", "aac", "-shortest"]);
+            }
+            _ => {}
+        }
+        // stills stay RGB (no 4:2:0 chroma subsampling); video is encoded as yuv420p
+        enc.args(["-vf", &format!("scale={ow}:{oh}:flags=bicubic,format={}", if is_image { "rgb24" } else { "yuv420p" })]);
+        if !is_image {
+            enc.args(["-c:v", "libx264", "-crf", &a.crf.to_string(), "-preset", "medium"]);
+        } else if !a.output.to_string_lossy().contains('%') {
+            // a single still: keep only the last frame written
+            enc.args(["-update", "1"]);
+        }
+        enc.arg(&a.output);
+        let mut enc = enc.stdin(Stdio::piped()).spawn().context("starting ffmpeg (encoder)")?;
+        let enc_in = enc.stdin.take().unwrap();
+
+        eprintln!("{}  {}x{} -> {}x{}  ({})", self.banner, iw, ih, ow, oh, a.output.display());
+        Ok(RunningPipe { a, dec, dec_out, enc, enc_in, source: self.source, _sound: self.sound })
+    }
+}
+
+impl RunningPipe<'_> {
+    /// Feed the decoder's frames to `session` (or, without one, through `bypass`) and its
+    /// frames to the encoder, until the input ends or `--frames` is reached.
+    fn render(self, mut session: Option<&mut dyn Playback>, bypass: &dyn Fn(&Frame) -> Frame) -> Result<()> {
+        let RunningPipe { a, mut dec, mut dec_out, mut enc, mut enc_in, source, _sound } = self;
+        let t0 = Instant::now();
+        let (mut n_in, mut n_out) = (0usize, 0usize);
+        let limit = a.frames.unwrap_or(usize::MAX);
+        let mut frame = Frame::new(source.w, source.h);
+        let mut write = |f: &Frame, n_out: &mut usize| -> Result<()> {
+            enc_in.write_all(&f.rgb)?;
+            *n_out += 1;
+            if *n_out % 15 == 0 {
+                eprint!("\r  {} frames  {:.2} fps   ", n_out, *n_out as f64 / t0.elapsed().as_secs_f64());
+            }
+            Ok(())
+        };
+        while n_in < limit && read_frame(&mut dec_out, &mut frame)? {
+            n_in += 1;
+            match session.as_mut() {
+                Some(s) => {
+                    s.push_frame(&frame);
+                    while s.frames_ready() >= a.batch as i64 {
+                        for f in s.play(a.batch) {
+                            write(&f, &mut n_out)?;
+                        }
                     }
                 }
-            }
-            None => write(&E::bypass(&frame), &mut n_out)?,
-        }
-    }
-    if let Some(s) = session.as_mut() {
-        s.finish_input();
-        while s.frames_ready() > 0 {
-            for f in s.play(a.batch) {
-                write(&f, &mut n_out)?;
+                None => write(&bypass(&frame), &mut n_out)?,
             }
         }
+        if let Some(s) = session.as_mut() {
+            s.finish_input();
+            while s.frames_ready() > 0 {
+                for f in s.play(a.batch) {
+                    write(&f, &mut n_out)?;
+                }
+            }
+        }
+        drop(enc_in);
+        let _ = dec.kill();
+        let st = enc.wait()?;
+        eprintln!("\r  {} frames in {:.1}s ({:.2} fps)          ", n_out, t0.elapsed().as_secs_f64(), n_out as f64 / t0.elapsed().as_secs_f64());
+        if !st.success() {
+            bail!("ffmpeg encoder failed");
+        }
+        Ok(())
     }
-    drop(enc_in);
-    let _ = dec.kill();
-    let st = enc.wait()?;
-    eprintln!("\r  {} frames in {:.1}s ({:.2} fps)          ", n_out, t0.elapsed().as_secs_f64(), n_out as f64 / t0.elapsed().as_secs_f64());
-    if !st.success() {
-        bail!("ffmpeg encoder failed");
-    }
-    Ok(())
 }
 
 /// Print the parameters, or with `condition` the `[condition]` table, of a preset on the
@@ -1024,6 +1241,7 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
             batch: 8,
             bypass: false,
             automate: None,
+            record: None,
             ffmpeg: "ffmpeg".to_string(),
             ffprobe: "ffprobe".to_string(),
         };
@@ -1271,6 +1489,59 @@ mod tests {
         let Cmd::Run(a) = cli.cmd else { panic!("expected Run command") };
         let err = run_engine::<Ntsc525>(a, TvStandard::Ntsc, "", "").unwrap_err().to_string();
         assert!(err.starts_with("loading automation file '/nonexistent/automation.json'"), "{err}");
+    }
+
+    /// A run of a config file written for the test; the programs do not exist, so only what is
+    /// checked before any decoding can be the error.
+    fn rack_run_error(config: &str, extra: &[&str]) -> String {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!("vhsphys-rack-test-{}-{n}.toml", std::process::id()));
+        std::fs::write(&path, config).unwrap();
+        let mut args = vec!["vhsphys", "run", "in.mp4", "out.mp4", "--ffmpeg", "/nonexistent/ffmpeg", "--ffprobe", "/nonexistent/ffprobe", "--config", path.to_str().unwrap()];
+        args.extend_from_slice(extra);
+        let cli = Cli::try_parse_from(args).unwrap();
+        let Cmd::Run(a) = cli.cmd else { panic!("expected Run command") };
+        let err = run(a).unwrap_err().to_string();
+        let _ = std::fs::remove_file(&path);
+        err
+    }
+
+    const TWO_RASTERS: &str = "[[generation]]\nstandard = \"pal\"\n[[generation]]\nstandard = \"ntsc\"\n";
+    const CONVERTER: &str = "[[link]]\ntype = \"standards_converter\"\nprofile = \"bbc_four_field\"\n";
+
+    #[test]
+    fn a_rack_that_changes_raster_without_a_converter_is_refused_before_anything_is_started() {
+        let err = rack_run_error(TWO_RASTERS, &[]);
+        assert!(err.contains("link 0") && err.contains("625/50") && err.contains("525/59.94") && err.contains("standards_converter"), "{err}");
+        // with the converter the rack is valid, and the run gets as far as the missing ffprobe
+        let err = rack_run_error(&format!("{TWO_RASTERS}{CONVERTER}"), &[]);
+        assert!(err.contains("ffprobe"), "{err}");
+    }
+
+    #[test]
+    fn a_rack_takes_its_generations_from_the_config_only() {
+        let rack = format!("{TWO_RASTERS}{CONVERTER}");
+        assert!(rack_run_error(&rack, &["--generations", "2"]).contains("--generations"));
+        assert!(rack_run_error(&rack, &["--bypass"]).contains("--bypass"));
+        // the record is the record of a rack
+        assert!(rack_run_error("[tape]\npasses = 2.0\n", &["--record", "/nonexistent/record.json"]).contains("--record"));
+        // a `--set` applies to every generation, and what an engine cannot play is refused
+        let err = rack_run_error(&rack, &["--set", "condition.tape_speed=ep"]);
+        assert!(err.contains("EP"), "{err}");
+    }
+
+    #[test]
+    fn each_raster_has_its_picture_format() {
+        let n = PictureFormat::of_raster(Raster::L525);
+        let p = PictureFormat::of_raster(Raster::L625);
+        assert_eq!((n.w, n.h, n.rate().as_str()), (754, 480, "30000/1001"));
+        assert_eq!((p.w, p.h, p.rate().as_str()), (740, 576, "25/1"));
+        // the fractions ffmpeg is given are the exact clocks of the timeline
+        for (r, f) in [(Raster::L525, n), (Raster::L625, p)] {
+            let period = r.frame_period();
+            assert_eq!((period.den() as u32, period.num() as u32), f.fps);
+        }
     }
 
     #[test]

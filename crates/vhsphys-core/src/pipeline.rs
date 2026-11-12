@@ -44,7 +44,7 @@ const DRAIN_BATCH: usize = 8;
 
 /// The schedule tracks that belong to the camera that shot the picture. In a dub only the first generation is fed
 /// with camera frames, so it is the only one that takes these from the schedule.
-const CAMERA_TRACKS: &[&str] = &["iris_stops"];
+pub const CAMERA_TRACKS: &[&str] = &["iris_stops"];
 
 /// Smallest pulse half-width automation may leave a head with, micrometres: the half-width must stay positive,
 /// because a pulse of zero width divides by zero and a negative one is turned upside down.

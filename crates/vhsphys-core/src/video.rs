@@ -127,6 +127,13 @@ pub fn burst_present(line: usize) -> bool {
     structure().1[line]
 }
 
+/// Whether sample `x` of the active part of frame line `line` carries picture. Only the last
+/// visible line of the second 625-line field does not all the way: its second half holds the
+/// equalising pulses.
+pub fn carries_picture(line: usize, x: usize) -> bool {
+    !structure_all().interval_half[(line * BB_PER_LINE + ACTIVE_START + x) / HALF_LINE_BB]
+}
+
 /// Write standard color burst to baseband chroma planes on lines that carry burst.
 pub fn write_standard_burst(bb: &mut Baseband) {
     for line in 0..LINES {

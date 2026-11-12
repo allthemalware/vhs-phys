@@ -43,6 +43,13 @@ Shared, compiled once and common to both engines (nothing in them depends on the
 * `rng`: the seeded random numbers
 * `interference_params`: the outside world as parameters
 
+Above the engines, naming both and holding no raster constant of their own:
+
+* `signal`: the contract of a signal between decks: raster, form, exact programme time (`Rational`), tagged `SignalChunk`s
+* `aperture`: four-field interpolation apertures synthesised from the fixed response points of BBC RD 1984/20
+* `convert`: the standards converter between the two rasters, on signal samples
+* `rack`: decks of either engine in series with explicit links, validation and config (`docs/BOUNCE.md`)
+
 Everything else in the table below is an engine module and exists once per engine. Unit tests
 inside engine files that assert 525-line figures return early in the other engine.
 
@@ -122,6 +129,15 @@ by three frames. Intermediate results are cached per field and evicted as the
 window moves, so memory is bounded (a few tens of MB) for any clip length.
 `Chain` runs one `Session` per generation, and the decode may be followed by
 `composite::roundtrip`.
+
+`rack::Rack` is the same for decks that need not share an engine. Each generation is a
+`Session` of its own engine; what passes between them is a `SignalChunk` (the three baseband
+planes tagged with raster, form, frame index and programme time), through a link that was
+validated when the rack was built. The two baseband grids have 910 samples per line at
+different rates, so nothing is mapped by sample index: a change of raster goes through
+`convert::StandardsConverter`, which places every output line and field by exact rational
+time and picture position. With one engine and direct links a `Rack` gives the frames of a
+`Chain`.
 
 ## Key numerical decisions
 

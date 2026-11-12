@@ -61,6 +61,7 @@ Platform expansion, performance architecture, and broader format support:
   - Analog tape formats: Betamax, Video8, Hi8, and U-matic (adapting helical RF parameters, subcarrier frequencies, and track geometries).
   - Digital tape media: MiniDV / DVCAM model (digital tape failure modes: DCT macroblocking, Reed-Solomon parity errors, concealment blocks, and audio packet drops).
 - **Multi-generation bounce simulation**:
-  - Heterogeneous generation graphs (e.g. Camera tube -> NTSC VHS SP -> Composite cable dub -> PAL deck -> CRT display) to model authentic compounding analogue generation loss.
+  - Done: serial racks of 525-line and 625-line decks, tagged signal hand-over on exact rational clocks, explicit links (direct reference, separate Y/C, composite) and a reference standards converter built from the four-field apertures of BBC RD 1984/20 (`docs/BOUNCE.md`, `docs/design/HETEROGENEOUS_BOUNCE.md`).
+  - To do: cable, connector and termination profiles; a converter with composite input and output stages; measured profiles of named decks and converters; previews of intermediate generations; branching graphs.
 - **Real-world tape degradation dataset collection**:
   - Gathering public domain and community RF captures (`vhs-decode`), calibrated test tape runs, and measured hardware deck responses to empirically validate and refine estimated (`[est]`) physical parameters.
