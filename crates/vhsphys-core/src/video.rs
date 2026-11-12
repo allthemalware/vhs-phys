@@ -161,6 +161,29 @@ pub fn encode_frame(frame: &Frame) -> Baseband {
     })
 }
 
+/// Weave two pictures sampled one field apart into one interlaced frame: `field0` supplies
+/// the even display rows (the lines of field 0) and `field1` the odd rows (field 1). Each
+/// target element of a camera, like each raster line of the recorder, is then fed by the
+/// picture of the field that scans it, and the frame goes through the same path as any other.
+pub fn weave_fields(field0: &Frame, field1: &Frame) -> Frame {
+    assert!(field0.w == ACTIVE_W && field0.h == ACTIVE_H, "field0 must be {ACTIVE_W}x{ACTIVE_H}");
+    assert!(field1.w == ACTIVE_W && field1.h == ACTIVE_H, "field1 must be {ACTIVE_W}x{ACTIVE_H}");
+    let mut woven = Frame::new(ACTIVE_W, ACTIVE_H);
+    let row_len = ACTIVE_W * 3;
+    for (row, out) in woven.rgb.chunks_exact_mut(row_len).enumerate() {
+        let src = if row % 2 == 0 { field0 } else { field1 };
+        out.copy_from_slice(&src.rgb[row * row_len..(row + 1) * row_len]);
+    }
+    woven
+}
+
+/// Encode two separate sequential fields into one interlaced baseband frame.
+/// `field0` supplies the active lines for field 0 (even rows), and `field1`
+/// supplies the active lines for field 1 (odd rows).
+pub fn encode_fields(field0: &Frame, field1: &Frame) -> Baseband {
+    encode_frame(&weave_fields(field0, field1))
+}
+
 /// Encode continuous floating-point RGB gun signals (`0.0..=1.0`) directly to baseband Y / C
 /// without quantising to an intermediate `u8` video frame.
 pub fn encode_from_rgb(mut sample_rgb: impl FnMut(usize, usize) -> [f32; 3]) -> Baseband {

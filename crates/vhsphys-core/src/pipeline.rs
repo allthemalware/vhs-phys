@@ -27,7 +27,7 @@ use super::record::*;
 use crate::rng::Rng;
 use super::tape::{Tape, TapeParams};
 use super::tracking::{lateral_weights, TrackingParams, NEIGHBOURS};
-use super::video::{encode_frame, Baseband, Frame};
+use super::video::{encode_frame, weave_fields, Baseband, Frame};
 use crate::standard::TvStandard;
 use rayon::prelude::*;
 use std::collections::{HashMap, VecDeque};
@@ -41,6 +41,14 @@ const LOOKAHEAD: i64 = 3;
 
 /// Batch size used to drain the earlier generations of a chain when the clip ends.
 const DRAIN_BATCH: usize = 8;
+
+/// The schedule tracks that belong to the camera that shot the picture. In a dub only the first generation is fed
+/// with camera frames, so it is the only one that takes these from the schedule.
+const CAMERA_TRACKS: &[&str] = &["iris_stops"];
+
+/// Smallest pulse half-width automation may leave a head with, micrometres: the half-width must stay positive,
+/// because a pulse of zero width divides by zero and a negative one is turned upside down.
+const MIN_AUTOMATED_H0_UM: f64 = 0.05;
 
 /// Everything that defines a deck, a tape and how worn they are.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -56,6 +64,10 @@ pub struct Params {
     pub tracking: TrackingParams,
     /// Tape speed: sets the track pitch, the tape advance and the audio bandwidth.
     pub speed: TapeSpeed,
+    /// The decks are HQ models: the recorder and the player use the HQ non-linear sub-emphasis
+    /// network. HQ is an SP feature, so `config::build` takes the network in only at SP. A switch
+    /// on the equipment, not part of the tape's condition.
+    pub hq: bool,
     /// The television standard this engine was built for (`consts::STANDARD`); `config::build` refuses another.
     pub standard: TvStandard,
     /// The camera's pickup tubes: lag and comet tails ahead of the recorder (off by default).
@@ -80,6 +92,7 @@ impl Default for Params {
             mech: MechParams::default(),
             tracking: TrackingParams::default(),
             speed: TapeSpeed::default(),
+            hq: false,
             standard: STANDARD,
             camera: CameraParams::default(),
             composite: CompositeParams::default(),
@@ -154,6 +167,7 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64, auto:
     let (g0, len) = track_window(n);
     let mut hp = p.heads[n.rem_euclid(2) as usize].clone();
     let mut tracking = p.tracking.clone();
+    let mut itf = p.interference.clone();
 
     if let Some(schedule) = auto {
         let frame_pos = n as f64 / 2.0;
@@ -163,8 +177,19 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64, auto:
         if let Some(wander) = schedule.eval("tracking_wander_um", frame_pos) {
             tracking.wander_um += wander;
         }
+        if let Some(slope) = schedule.eval("tracking_slope_um", frame_pos) {
+            tracking.slope_um += slope;
+        }
+        if let Some(bow) = schedule.eval("tracking_bow_um", frame_pos) {
+            tracking.bow_um += bow;
+        }
         if let Some(sp) = schedule.head_spacing(frame_pos) {
             hp.extra_spacing_um += sp;
+        }
+        if let Some(wear) = schedule.head_wear(frame_pos) {
+            hp.extra_spacing_um += 0.06 * wear;
+            hp.h0_um += 0.25 * wear;
+            hp.gain *= (1.0 - 0.35 * wear).max(0.0);
         }
         if let Some(gain_mod) = schedule.eval("head_gain", frame_pos) {
             hp.gain *= gain_mod;
@@ -175,10 +200,37 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64, auto:
         if let Some(az) = schedule.eval("azimuth_error_deg", frame_pos) {
             hp.azimuth_error_deg += az;
         }
+        if let Some(dist_cm) = schedule.head_magnet_cm(frame_pos) {
+            itf.head_magnet.distance_m = dist_cm / 100.0;
+            if itf.head_magnet.kind == MagnetKind::Absent {
+                itf.head_magnet.kind = MagnetKind::Neodymium;
+            }
+        }
+        // automation adds to what the head model was configured with and can drive a value out of its range
+        hp.h0_um = hp.h0_um.max(MIN_AUTOMATED_H0_UM);
+        hp.extra_spacing_um = hp.extra_spacing_um.max(0.0);
+        hp.gain = hp.gain.max(0.0);
+        tracking.wander_um = tracking.wander_um.max(0.0);
     }
 
     let mut ctl = Controls::new(len);
     cx.mech.fill_warp(n, g0, &mut ctl);
+    if let Some(schedule) = auto {
+        let frame_pos = n as f64 / 2.0;
+        if let Some(tension) = schedule.tension(frame_pos) {
+            if tension != 0.0 {
+                let tf = p.mech.flag_lines * RF_PER_LINE as f64;
+                let extra_flag = 0.8e-6 * (-tension).max(0.0);
+                let g_in = switch_time(n);
+                for (i, w) in ctl.warp.iter_mut().enumerate() {
+                    let g = g0 + (i * STRIDE) as i64;
+                    if g >= g_in {
+                        *w += (extra_flag * (-((g - g_in) as f64) / tf).exp()) as f32;
+                    }
+                }
+            }
+        }
+    }
     cx.tape.paint(n, g0, hp.width_um, &mut ctl);
     if hp.extra_spacing_um != 0.0 {
         for v in ctl.dd.iter_mut() {
@@ -219,13 +271,12 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64, auto:
             *a += *b;
         }
     }
-    let itf = &p.interference;
     if itf.head_magnet_on() {
         // A magnet at the drum saturates the head core and erases part of the track: the tape
         // signal falls, the amplifier noise does not, so this goes in before the front end. The
         // gain changes on the time scale of the approach (seconds): one value per track.
         let t_mid = (g0 + (len / 2) as i64) as f64 / FS_RF;
-        let gain = head_signal_gain(itf, t_mid) as f32;
+        let gain = head_signal_gain(&itf, t_mid) as f32;
         for v in buf.iter_mut() {
             *v *= gain;
         }
@@ -235,7 +286,7 @@ fn render_rf(cx: &Ctx, trans: &HashMap<i64, Arc<Vec<Transition>>>, n: i64, auto:
     if itf.rf_on() {
         // What the head leads pick up is compared with the nominal, unworn head signal: a worn
         // head sees relatively more of it.
-        rf_pickup_add(itf, g0, &mut buf, nominal_fm_amplitude(NOMINAL_CARRIER_HZ, hp.h0_samples()));
+        rf_pickup_add(&itf, g0, &mut buf, nominal_fm_amplitude(NOMINAL_CARRIER_HZ, hp.h0_samples()));
     }
     buf
 }
@@ -368,7 +419,9 @@ pub struct Session {
     /// part-way into a clip with the tube on needs a pre-roll of frames before its first
     /// output frame to match a render of the whole clip.
     camera: Option<CameraTube>,
-    /// Optional parameter automation schedule for time-varying curves.
+    /// Optional parameter automation schedule for time-varying curves. A session reads it in three places: `push`
+    /// takes the camera's `iris_stops`, `render_rf` the tracking and head tracks, and `process` the picture tube's
+    /// `crt_magnet_*` tracks. A session in a `Chain` holds only the part of the schedule that belongs to it.
     pub automation: Option<Arc<AutomationSchedule>>,
     frames: VecDeque<Arc<Baseband>>,
     first_idx: i64,
@@ -415,6 +468,8 @@ impl Session {
         }
     }
 
+    /// Set the schedule this session reads. The session reads all of it: the camera track (when the session has a
+    /// camera tube), the tracking and head tracks and the picture tube's magnet tracks.
     pub fn set_automation(&mut self, schedule: Option<AutomationSchedule>) {
         self.automation = schedule.map(Arc::new);
     }
@@ -438,6 +493,16 @@ impl Session {
             None => encode_frame(f),
         };
         self.push_baseband(bb);
+    }
+
+    /// Queue two consecutive fields (sampled at t0 and t1 = t0 + 1/field_rate) as one
+    /// interlaced frame. The pictures are woven first (even rows from `f0`, odd rows from
+    /// `f1`) and the result goes through `push`: the camera then exposes and scans each target
+    /// element once per frame, by the field that reads its row, which is what the tube's lag
+    /// and beam figures are fitted for (a scan per picture would age the charge twice as fast),
+    /// and the iris automation applies as it does for any other frame.
+    pub fn push_fields(&mut self, f0: &Frame, f1: &Frame) {
+        self.push(&weave_fields(f0, f1));
     }
 
     /// Queue a continuous `Baseband` frame directly (used when dubbing from an upstream VCR deck
@@ -643,6 +708,7 @@ impl Session {
 /// picture the stage before it played back. One stage is exactly a plain `Session`.
 pub struct Chain {
     stages: Vec<Session>,
+    /// The whole schedule, as given to `set_automation`. Each stage holds only the part that belongs to it.
     pub automation: Option<Arc<AutomationSchedule>>,
 }
 
@@ -661,11 +727,23 @@ impl Chain {
         }
     }
 
+    /// Set the automation schedule. A schedule describes the camera that shot the picture and the deck and television
+    /// the viewer is watching, so it is not handed to every generation. With one stage that stage takes the whole
+    /// schedule. With more, the first stage (the only one fed with camera frames) takes only the camera tracks, the last
+    /// stage (the deck and picture tube the viewer sees) takes the whole schedule and the stages between take none.
     pub fn set_automation(&mut self, schedule: Option<AutomationSchedule>) {
-        let arc = schedule.map(Arc::new);
-        self.automation = arc.clone();
-        for s in &mut self.stages {
-            s.automation = arc.clone();
+        let whole = schedule.map(Arc::new);
+        self.automation = whole.clone();
+        let camera = whole.as_deref().map(|s| s.subset(CAMERA_TRACKS)).filter(|s| !s.tracks.is_empty()).map(Arc::new);
+        let last = self.stages.len() - 1;
+        for (i, stage) in self.stages.iter_mut().enumerate() {
+            stage.automation = if i == last {
+                whole.clone()
+            } else if i == 0 {
+                camera.clone()
+            } else {
+                None
+            };
         }
     }
 
@@ -740,7 +818,8 @@ impl Chain {
         out
     }
 
-    /// Convenience: run a whole clip through every generation with dynamic parameter automation.
+    /// Convenience: run a whole clip through every generation with dynamic parameter automation, scoped as in
+    /// `set_automation`.
     pub fn run_with_automation(stages: Vec<Params>, input: &[Frame], automation: AutomationSchedule) -> Vec<Frame> {
         let mut c = Chain::new(stages).with_automation(automation);
         let mut out = Vec::new();

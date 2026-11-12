@@ -113,11 +113,30 @@ pub struct HeadParams {
     /// Constant extra head-to-tape spacing (um): worn head tips, a film of
     /// debris on the drum, a clogged head.
     pub extra_spacing_um: f64,
+    /// Finite head pole-face length, micrometres (nominal 60.0 um).
+    pub pole_length_um: f64,
+    /// Pole-face contour echo (head bumps): the share of the low-band tape signal (below about
+    /// 1 MHz) that the edges of the pole face pick up a pole length before and after the gap. It
+    /// acts on the tape signal, ahead of the amplifier noise and the resonance (default 0.0 = off).
+    pub contour_amp: f64,
 }
 
 /// Carrier frequency at which the head's nominal output is taken: the middle of the luma FM
 /// band, half a megahertz above the sync tip (3.9 MHz in the 525-line format, 4.3 MHz in PAL).
 pub const NOMINAL_CARRIER_HZ: f64 = F_SYNC_TIP + 0.5e6;
+
+/// Corner of the low band that the pole-face contour echo is confined to, Hz. The echo is
+/// filtered by a second-order Butterworth low-pass run forwards and backwards, which is -0.6 dB
+/// at 629 kHz and -41 dB at 3.9 MHz, so the luma carrier sees none of it.
+const CONTOUR_CORNER_HZ: f64 = 1.2e6;
+
+/// Order of each pass of the contour low-pass.
+const CONTOUR_ORDER: usize = 2;
+
+/// Samples at each end of the window over which the contour echo is faded in: the filters start
+/// from rest there, so what they give is their start-up ringing and not the signal (the ringing
+/// of the 1.2 MHz corner dies away in about 8 samples).
+const CONTOUR_FADE: usize = 128;
 
 /// Absolute track-width reference (micrometres) against which head CNR and media AM
 /// noise are normalized. 58.0 um is the 525-line SP track width. Narrower tracks (such as
@@ -137,6 +156,8 @@ impl Default for HeadParams {
             width_um: TRACK_PITCH_UM,
             media_am_noise: 0.02,
             extra_spacing_um: 0.0,
+            pole_length_um: 60.0,
+            contour_amp: 0.0,
         }
     }
 }
@@ -154,8 +175,28 @@ pub fn nominal_fm_amplitude(f: f64, h_samples: f64) -> f64 {
     4.0 / std::f64::consts::PI * w * (-w * h_samples).exp()
 }
 
-/// Add head-amplifier noise (white, set by the nominal CNR) and media AM noise,
-/// then apply the head resonance. `rng` must be unique to this track.
+/// The low band of `buf` with no delay: the contour low-pass run forwards, then again over the
+/// reversed result. The first and last `CONTOUR_FADE` samples are faded in with a raised cosine,
+/// so the start-up ringing of the filters is not echoed into the window.
+fn contour_low_band(buf: &[f32]) -> Vec<f32> {
+    let mut low = buf.to_vec();
+    butter_lp(CONTOUR_ORDER, CONTOUR_CORNER_HZ, FS_RF).process(&mut low);
+    low.reverse();
+    butter_lp(CONTOUR_ORDER, CONTOUR_CORNER_HZ, FS_RF).process(&mut low);
+    low.reverse();
+    let fade = CONTOUR_FADE.min(low.len() / 2);
+    for k in 0..fade {
+        let w = 0.5 * (1.0 - (PI32 * k as f32 / fade as f32).cos());
+        let end = low.len() - 1 - k;
+        low[k] *= w;
+        low[end] *= w;
+    }
+    low
+}
+
+/// The head's electrical front end, in the order the signal meets it: the pole-face contour
+/// echo (`contour_amp`) on the tape signal, then head-amplifier noise (white, set by the
+/// nominal CNR) and media AM noise, then the head resonance. `rng` must be unique to this track.
 ///
 /// The noise is media dominated: its power is proportional to the track width the head
 /// reads, the signal power to the square of it. The CNR therefore falls by
@@ -163,6 +204,20 @@ pub fn nominal_fm_amplitude(f: f64, h_samples: f64) -> f64 {
 /// and the media AM noise, an amplitude, scales with `sqrt(58 / width)`. The reference
 /// is the SP track pitch, for which both factors are exactly 1.
 pub fn head_front_end(buf: &mut [f32], hp: &HeadParams, rng: &mut Rng) {
+    // The edges of the pole face pick up the low band of the tape signal one pole length ahead
+    // of the gap and one behind it. That is part of reading the tape, so it comes before the
+    // amplifier adds its noise and before the resonance. The low-pass runs forwards and then
+    // backwards so that the two echoes stay symmetric about the reversal.
+    if hp.contour_amp > 0.0 {
+        let d = (hp.pole_length_um / UM_PER_SAMPLE).round() as usize;
+        if d >= 2 && d < buf.len() / 4 {
+            let low = contour_low_band(buf);
+            let half_amp = (0.5 * hp.contour_amp) as f32;
+            for i in d..buf.len() - d {
+                buf[i] += half_amp * (low[i - d] + low[i + d]);
+            }
+        }
+    }
     let a_nom = nominal_fm_amplitude(NOMINAL_CARRIER_HZ, hp.h0_samples());
     let cnr_db = hp.cnr_db + 10.0 * (hp.width_um / REF_TRACK_PITCH_UM).log10();
     let media_am = hp.media_am_noise * (REF_TRACK_PITCH_UM / hp.width_um).sqrt();

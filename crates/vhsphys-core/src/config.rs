@@ -5,11 +5,12 @@
 //!
 //! Accepted tables: `condition` (see `Condition`), `record`, `deck`, `decode`,
 //! `tape`, `mech`, `tracking`, `head` (both heads), `head0`, `head1`, and the
-//! top-level `seed` and `standard`. `build` refuses what the engine cannot play: another
+//! top-level `seed`, `standard`, `speed` and `hq` (HQ decks). `build` refuses what the engine cannot play: another
 //! engine's standard, composite video into a PAL television, and EP in the 625-line engine.
 
 use super::condition::Condition;
 use super::consts::{HAS_EP, STANDARD};
+use super::emphasis::HQ_FIGURES;
 use super::format::TapeSpeed;
 use super::pipeline::Params;
 use crate::standard::TvStandard;
@@ -114,6 +115,20 @@ fn check_standard(mut p: Params) -> Result<Params, String> {
     p.decode.tv = p.standard.colour_tv();
     if p.speed == TapeSpeed::Ep && !HAS_EP {
         return Err("EP is not a 625-line VHS speed (SP and LP only)".into());
+    }
+    // HQ is an SP feature. The switch and the speed may both come from overrides, so the network
+    // is decided here, after every merge: in at SP, and out again at another speed (what the same
+    // speed gives without HQ).
+    if p.hq && p.speed == TapeSpeed::Sp {
+        p.record.sub_emphasis = Some(HQ_FIGURES);
+        p.deck.sub_deemphasis = Some(HQ_FIGURES);
+    } else {
+        if p.record.sub_emphasis == Some(HQ_FIGURES) {
+            p.record.sub_emphasis = None;
+        }
+        if p.deck.sub_deemphasis == Some(HQ_FIGURES) {
+            p.deck.sub_deemphasis = None;
+        }
     }
     Ok(p)
 }

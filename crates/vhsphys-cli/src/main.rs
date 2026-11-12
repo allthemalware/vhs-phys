@@ -27,6 +27,28 @@ use vhsphys_core::{ntsc, pal};
 /// Mains frequency the preset listing takes for granted; another one is worth a word.
 const NOMINAL_MAINS_HZ: f64 = MAINS_HZ_DEFAULT;
 
+/// Extensions of the still images a run can write (lower case); any other output is H.264 video with AAC sound.
+const IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "bmp", "tif", "tiff"];
+
+/// Extensions of the containers that hold that H.264 video and AAC sound (lower case); others, such as webm, do not.
+const VIDEO_EXTENSIONS: [&str; 4] = ["mp4", "mkv", "mov", "m4v"];
+
+/// Extension of a default output name when the input's is not one a run can write.
+const FALLBACK_EXTENSION: &str = "mp4";
+
+/// The `[condition]` table of the config text. `--set condition.KEY=VALUE` items go into it.
+const CONDITION_TABLE: &str = "condition";
+
+/// The most generations a chain of dubs may have.
+const MAX_GENERATIONS: u8 = 8;
+
+/// What the wizard offers for the camera exposure (stops) and for the generations; Enter takes them.
+const WIZARD_IRIS_STOPS: &str = "2.0";
+const WIZARD_GENERATIONS: &str = "1";
+
+/// Characters, besides letters and digits, that a POSIX shell takes literally in a word.
+const SHELL_SAFE: &str = "_./=:+-,@%";
+
 /// A number as a person would write it: 6, 59.4, 0.9 (no trailing zeros).
 fn plain(x: f64) -> String {
     let s = format!("{x:.2}");
@@ -201,7 +223,7 @@ struct RunArgs {
     #[arg(long, default_value_t = 1)]
     seed: u64,
     /// Generations: 1 is a recording of the source, 2 a copy of that tape, and so on.
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=8))]
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=MAX_GENERATIONS as i64))]
     generations: u8,
     /// Sound: process (through the simulated tape and deck), copy (untouched) or none.
     #[arg(long, value_enum, default_value_t = AudioMode::Process)]
@@ -436,6 +458,55 @@ fn pick_standard(flag: Option<StandardArg>, sets: &[String], config_file: &toml:
     }
 }
 
+/// Whether a `--set` item sets a key inside `table`: `condition.tape_speed=lp` does for `condition`.
+fn is_set_in_table(item: &str, table: &str) -> bool {
+    item.split_once('=').is_some_and(|(k, _)| k.trim().strip_prefix(table).is_some_and(|rest| rest.starts_with('.')))
+}
+
+/// The config text of a run (the file's, with what the `--set` items put into it), the text of
+/// the `--set` items that apply to every generation as they are, and the television standard.
+fn assemble_config(file_text: &str, sets: &[String], standard_flag: Option<StandardArg>) -> Result<(String, String, TvStandard)> {
+    // `--set seed=N` is the seed of the whole chain, like a `seed` in the config file: it goes
+    // into the config text, where every later generation derives its own seed from it. The
+    // other `--set` items apply to every generation as they are. So does `--set standard=...`
+    // and for the same reason: the standard decides which engine reads the config, and the
+    // engine refuses what it cannot play (EP at 625 lines), which only happens for a standard
+    // that is in the text. `--set condition.KEY=...` goes into the text too, into its
+    // `[condition]` table: the condition is mapped to parameters before the other overrides
+    // apply, and an override cannot reach back into that mapping (the tape speed gives the head
+    // width, the sub-emphasis, the carrier interleave and the burst boost, and an override of
+    // the top-level `speed` changes none of them).
+    let (seed_sets, other_sets) = take_key(sets.to_vec(), "seed");
+    let (standard_sets, other_sets) = take_key(other_sets, "standard");
+    let (condition_sets, other_sets): (Vec<String>, Vec<String>) = other_sets.into_iter().partition(|s| is_set_in_table(s, CONDITION_TABLE));
+    let mut table: toml::Table = toml::from_str(file_text).map_err(|e| anyhow!("config: {e}"))?;
+    let standard = pick_standard(standard_flag, &standard_sets, &table)?;
+    let mut edited = false;
+    if !seed_sets.is_empty() {
+        let seed_set: toml::Table = toml::from_str(&config::sets_to_toml(&seed_sets).map_err(anyhow::Error::msg)?)?;
+        table.extend(seed_set);
+        edited = true;
+    }
+    if standard_flag.is_some() || !standard_sets.is_empty() {
+        table.insert("standard".into(), toml::Value::String(standard.name().into()));
+        edited = true;
+    }
+    if !condition_sets.is_empty() {
+        let mut from_sets: toml::Table = toml::from_str(&config::sets_to_toml(&condition_sets).map_err(anyhow::Error::msg)?)?;
+        if let Some(toml::Value::Table(items)) = from_sets.remove(CONDITION_TABLE) {
+            // an item of the same key wins over the file's, the file's other keys stay
+            match table.entry(CONDITION_TABLE).or_insert_with(|| toml::Value::Table(toml::Table::new())) {
+                toml::Value::Table(condition) => condition.extend(items),
+                _ => bail!("config: {CONDITION_TABLE} must be a table"),
+            }
+            edited = true;
+        }
+    }
+    let text = if edited { toml::to_string(&table)? } else { file_text.to_string() };
+    let overrides = config::sets_to_toml(&other_sets).map_err(anyhow::Error::msg)?;
+    Ok((text, overrides, standard))
+}
+
 fn run(a: RunArgs) -> Result<()> {
     if let Some(t) = a.threads {
         rayon::ThreadPoolBuilder::new().num_threads(t).build_global().ok();
@@ -444,14 +515,11 @@ fn run(a: RunArgs) -> Result<()> {
         Some(p) => std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))?,
         None => String::new(),
     };
-    // `--set seed=N` is the seed of the whole chain, like a `seed` in the config file: it goes
-    // into the config text, where every later generation derives its own seed from it. The
-    // other `--set` items apply to every generation as they are. So does `--set standard=...`
-    // and for the same reason: the standard decides which engine reads the config, and the
-    // engine refuses what it cannot play (EP at 625 lines), which
-    // only happens for a standard that is in the text.
-    let (seed_sets, other_sets) = take_key(a.sets.clone(), "seed");
-    let (standard_sets, mut other_sets) = take_key(other_sets, "standard");
+    // The flags come first, so that a `--set` of the same key wins over them.
+    let mut sets = Vec::new();
+    if let Some(stops) = a.iris_stops {
+        sets.push(format!("camera.iris_stops={stops:?}"));
+    }
     if let Some(tube) = a.camera_tube {
         let name = match tube {
             CameraTubeArg::Off => "off",
@@ -459,25 +527,10 @@ fn run(a: RunArgs) -> Result<()> {
             CameraTubeArg::PlumbiconBias => "plumbicon-bias",
             CameraTubeArg::PlumbiconAct => "plumbicon-act",
         };
-        other_sets.insert(0, format!("camera.tube={name}"));
+        sets.push(format!("camera.tube={name}"));
     }
-    if let Some(stops) = a.iris_stops {
-        other_sets.insert(0, format!("camera.iris_stops={stops:?}"));
-    }
-    let mut table: toml::Table = toml::from_str(&file_text).map_err(|e| anyhow!("config: {e}"))?;
-    let standard = pick_standard(a.standard, &standard_sets, &table)?;
-    let mut edited = false;
-    if !seed_sets.is_empty() {
-        let seed_set: toml::Table = toml::from_str(&config::sets_to_toml(&seed_sets).map_err(anyhow::Error::msg)?)?;
-        table.extend(seed_set);
-        edited = true;
-    }
-    if a.standard.is_some() || !standard_sets.is_empty() {
-        table.insert("standard".into(), toml::Value::String(standard.name().into()));
-        edited = true;
-    }
-    let text = if edited { toml::to_string(&table)? } else { file_text };
-    let sets = config::sets_to_toml(&other_sets).map_err(anyhow::Error::msg)?;
+    sets.extend(a.sets.iter().cloned());
+    let (text, sets, standard) = assemble_config(&file_text, &sets, a.standard)?;
     if standard.is_625() {
         run_engine::<Pal625>(a, standard, &text, &sets)
     } else {
@@ -487,6 +540,12 @@ fn run(a: RunArgs) -> Result<()> {
 
 fn run_engine<E: Engine>(a: RunArgs, standard: TvStandard, text: &str, sets: &str) -> Result<()> {
     debug_assert!((E::FPS.0 as f64 / E::FPS.1 as f64 - E::FRAME_RATE).abs() < 1e-9, "the frame rate fraction does not match the engine");
+    // Read before the sound is processed and before the encoder starts: it overwrites the
+    // output, which a missing or malformed file must not cost.
+    let automation = match &a.automate {
+        Some(path) => Some(vhsphys_core::automation::AutomationSchedule::from_file(path).map_err(|e| anyhow::anyhow!("loading automation file '{}': {e}", path.display()))?),
+        None => None,
+    };
     let stages = E::generations(&a.preset, text, a.seed, a.generations as usize, sets).map_err(anyhow::Error::msg)?;
 
     let (iw, ih) = probe_size(&a.ffprobe, &a.input)?;
@@ -499,7 +558,7 @@ fn run_engine<E: Engine>(a: RunArgs, standard: TvStandard, text: &str, sets: &st
     };
     let (fps_num, fps_den) = E::FPS;
     let fps = format!("{fps_num}/{fps_den}");
-    let is_image = matches!(a.output.extension().and_then(|e| e.to_str()), Some("png" | "jpg" | "jpeg" | "bmp" | "tif" | "tiff"));
+    let is_image = has_extension(&a.output, &IMAGE_EXTENSIONS);
     // The tape, its defects and the timebase error are functions of the absolute frame index,
     // so rendering from `--start` gives the same picture as rendering the whole file.
     let start_frame = a.start.map_or(0, |s| (s * fps_num as f64 / fps_den as f64).round() as i64);
@@ -587,10 +646,8 @@ fn run_engine<E: Engine>(a: RunArgs, standard: TvStandard, text: &str, sets: &st
         None
     } else {
         let mut chain = E::chain(stages, start_frame);
-        if let Some(path) = &a.automate {
-            let auto = vhsphys_core::automation::AutomationSchedule::from_file(path)
-                .map_err(|e| anyhow::anyhow!("loading automation file '{}': {e}", path.display()))?;
-            chain.set_automation(Some(auto));
+        if automation.is_some() {
+            chain.set_automation(automation);
         }
         Some(chain)
     };
@@ -657,6 +714,53 @@ fn show<E: Engine>(standard: TvStandard, preset: &str, seed: u64, condition: boo
     Ok(())
 }
 
+/// Whether the path's extension is one of `list` (which is lower case), whatever its case.
+fn has_extension(path: &Path, list: &[&str]) -> bool {
+    path.extension().and_then(|e| e.to_str()).is_some_and(|e| list.iter().any(|l| e.eq_ignore_ascii_case(l)))
+}
+
+/// The wizard's default output for an input: its name with `_vhs` added. It keeps the input's
+/// extension only if a run can write it (a still image, or a container that holds H.264 video
+/// with AAC sound); the encoder fails or refuses the sound in others, such as webm.
+fn default_output_name(input: &Path) -> String {
+    let stem = input.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+    let writable = has_extension(input, &IMAGE_EXTENSIONS) || has_extension(input, &VIDEO_EXTENSIONS);
+    let ext = input.extension().and_then(|e| e.to_str()).filter(|_| writable).unwrap_or(FALLBACK_EXTENSION);
+    format!("{stem}_vhs.{ext}")
+}
+
+/// One argument of a command line as a POSIX shell reads it back: bare if it is made of safe
+/// characters only, else in single quotes (a single quote inside is closed, escaped and reopened).
+fn shell_quote(arg: &str) -> String {
+    if !arg.is_empty() && arg.chars().all(|c| c.is_ascii_alphanumeric() || SHELL_SAFE.contains(c)) {
+        arg.to_string()
+    } else {
+        format!("'{}'", arg.replace('\'', "'\\''"))
+    }
+}
+
+/// Whether two paths name the same file. The encoder overwrites its output, so naming the input
+/// as the output would destroy the source while it is read. An existing output is compared by
+/// canonical path (links and `..` resolved); one that does not exist yet by its plain path.
+fn same_file(input: &Path, output: &Path) -> bool {
+    if output.exists() {
+        if let (Ok(i), Ok(o)) = (input.canonicalize(), output.canonicalize()) {
+            return i == o;
+        }
+    }
+    input == output
+}
+
+/// A camera exposure in stops: any finite number.
+fn parse_iris_stops(answer: &str) -> Option<f64> {
+    answer.parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
+/// A number of generations: a whole number from 1 to `MAX_GENERATIONS`.
+fn parse_generations(answer: &str) -> Option<u8> {
+    answer.parse::<u8>().ok().filter(|n| (1..=MAX_GENERATIONS).contains(n))
+}
+
 fn ask_line(prompt_text: &str, default_val: Option<&str>) -> Result<String> {
     print!("{prompt_text}");
     if let Some(d) = default_val {
@@ -703,9 +807,23 @@ fn ask_choice(prompt_text: &str, choices: &[(&str, &str)], default_idx: usize) -
 }
 
 fn ask_iris_stops() -> Result<Option<f64>> {
-    let stops_str = ask_line("Camera exposure (iris stops: 0 = normal, +2 = overexposed highlights leave tails)", Some("2.0"))?;
-    let val = stops_str.parse::<f64>().unwrap_or(2.0);
-    Ok(Some(val))
+    loop {
+        let answer = ask_line("Camera exposure (iris stops: 0 = normal, +2 = overexposed highlights leave tails)", Some(WIZARD_IRIS_STOPS))?;
+        match parse_iris_stops(&answer) {
+            Some(stops) => return Ok(Some(stops)),
+            None => println!("'{answer}' is not a number of stops. Please enter a number such as 2 or -1.5."),
+        }
+    }
+}
+
+fn ask_generations() -> Result<u8> {
+    loop {
+        let answer = ask_line("Tape dub generations (1 = first recording, 2 = copy of tape)", Some(WIZARD_GENERATIONS))?;
+        match parse_generations(&answer) {
+            Some(n) => return Ok(n),
+            None => println!("'{answer}' is not a number of generations. Please enter a whole number from 1 to {MAX_GENERATIONS}."),
+        }
+    }
 }
 
 fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()> {
@@ -726,13 +844,22 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
         println!("File '{}' not found. Please enter a valid path.", path.display());
     };
 
-    let default_out = output_opt.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| {
-        let stem = input_path.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
-        let ext = input_path.extension().and_then(|s| s.to_str()).unwrap_or("mp4");
-        format!("{stem}_vhs.{ext}")
-    });
-    let out_str = ask_line("Output video file", Some(&default_out))?;
-    let output_path = PathBuf::from(out_str);
+    let default_out = output_opt.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|| default_output_name(&input_path));
+    let output_path = loop {
+        // A default that is the input itself is not offered, so that Enter (or the end of the input) cannot take it.
+        let default = (!same_file(&input_path, Path::new(&default_out))).then_some(default_out.as_str());
+        let answer = ask_line("Output video file", default)?;
+        if answer.is_empty() {
+            println!("Output file is required.");
+            continue;
+        }
+        let path = PathBuf::from(&answer);
+        if same_file(&input_path, &path) {
+            println!("'{}' is the input file, which the run would overwrite while reading it. Please name another output file.", path.display());
+            continue;
+        }
+        break path;
+    };
 
     let std_choices = [
         ("NTSC", "525 lines @ 29.97 fps (North America, Japan)"),
@@ -810,29 +937,35 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
         _ => AudioMode::None,
     };
 
-    let gen_str = ask_line("Tape dub generations (1 = first recording, 2 = copy of tape)", Some("1"))?;
-    let generations: u8 = gen_str.parse().unwrap_or(1).clamp(1, 8);
+    let generations = ask_generations()?;
 
     let mut sets = Vec::new();
     if speed_name != "sp" {
-        sets.push(format!("speed={speed_name}"));
+        // through the condition, which derives the head width and the sub-emphasis from the speed
+        sets.push(format!("{CONDITION_TABLE}.tape_speed={speed_name}"));
     }
 
     let mut cmd_parts = vec!["vhsphys".to_string(), "run".to_string()];
     cmd_parts.push(input_path.display().to_string());
     cmd_parts.push(output_path.display().to_string());
     if standard_arg != StandardArg::Ntsc {
-        cmd_parts.push(format!("--standard {}", match standard_arg {
-            StandardArg::Ntsc => "ntsc",
-            StandardArg::Pal => "pal",
-            StandardArg::Pal60 => "pal60",
-        }));
+        cmd_parts.push("--standard".to_string());
+        cmd_parts.push(
+            match standard_arg {
+                StandardArg::Ntsc => "ntsc",
+                StandardArg::Pal => "pal",
+                StandardArg::Pal60 => "pal60",
+            }
+            .to_string(),
+        );
     }
     if preset_name != "worn" {
-        cmd_parts.push(format!("--preset {preset_name}"));
+        cmd_parts.push("--preset".to_string());
+        cmd_parts.push(preset_name.clone());
     }
     for s in &sets {
-        cmd_parts.push(format!("--set {s}"));
+        cmd_parts.push("--set".to_string());
+        cmd_parts.push(s.clone());
     }
     if let Some(tube) = camera_tube_arg {
         let t_str = match tube {
@@ -841,10 +974,12 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
             CameraTubeArg::PlumbiconBias => "plumbicon-bias",
             CameraTubeArg::PlumbiconAct => "plumbicon-act",
         };
-        cmd_parts.push(format!("--camera-tube {t_str}"));
+        cmd_parts.push("--camera-tube".to_string());
+        cmd_parts.push(t_str.to_string());
     }
     if let Some(stops) = iris_stops {
-        cmd_parts.push(format!("--iris-stops {stops}"));
+        cmd_parts.push("--iris-stops".to_string());
+        cmd_parts.push(stops.to_string());
     }
     if audio_arg != AudioMode::Process {
         let a_str = match audio_arg {
@@ -852,13 +987,15 @@ fn wizard(input_opt: Option<PathBuf>, output_opt: Option<PathBuf>) -> Result<()>
             AudioMode::Copy => "copy",
             AudioMode::None => "none",
         };
-        cmd_parts.push(format!("--audio {a_str}"));
+        cmd_parts.push("--audio".to_string());
+        cmd_parts.push(a_str.to_string());
     }
     if generations > 1 {
-        cmd_parts.push(format!("--generations {generations}"));
+        cmd_parts.push("--generations".to_string());
+        cmd_parts.push(generations.to_string());
     }
 
-    let full_cmd = cmd_parts.join(" ");
+    let full_cmd = cmd_parts.iter().map(|part| shell_quote(part)).collect::<Vec<_>>().join(" ");
     println!("\n{}", "=".repeat(60));
     println!("Generated command:\n  {}", full_cmd);
     println!("{}\n", "=".repeat(60));
@@ -1035,5 +1172,185 @@ mod tests {
             }
             _ => panic!("expected Wizard command"),
         }
+    }
+
+    /// The parameters of generation 0 of a 525-line run with this config file and these `--set` items.
+    fn run_params(file: &str, sets: &[&str]) -> <Ntsc525 as Engine>::Params {
+        let sets: Vec<String> = sets.iter().map(|s| s.to_string()).collect();
+        let (text, overrides, _) = assemble_config(file, &sets, None).unwrap();
+        Ntsc525::generations("worn", &text, 1, 1, &overrides).unwrap().remove(0)
+    }
+
+    fn condition_of(text: &str) -> toml::Table {
+        let table: toml::Table = toml::from_str(text).unwrap();
+        table["condition"].as_table().unwrap().clone()
+    }
+
+    #[test]
+    fn a_condition_set_gives_the_parameters_of_the_same_condition_in_a_file() {
+        let sp = run_params("", &[]);
+        for speed in ["lp", "ep"] {
+            let via_set = run_params("", &[&format!("condition.tape_speed={speed}")]);
+            let via_file = run_params(&format!("[condition]\ntape_speed = \"{speed}\"\n"), &[]);
+            assert!(via_set.speed != sp.speed, "{speed}");
+            assert!(via_set.speed == via_file.speed, "{speed}");
+            assert_eq!(via_set.heads[0].width_um, via_file.heads[0].width_um, "{speed}");
+            assert!(via_set.heads[0].width_um < sp.heads[0].width_um, "{speed}");
+            assert!(via_set.record.sub_emphasis.is_some() && sp.record.sub_emphasis.is_none(), "{speed}");
+            assert_eq!(via_set.record.sub_emphasis.is_some(), via_file.record.sub_emphasis.is_some(), "{speed}");
+            assert_eq!(via_set.record.carrier_interleave_hz, via_file.record.carrier_interleave_hz, "{speed}");
+            assert!(via_set.record.carrier_interleave_hz != sp.record.carrier_interleave_hz, "{speed}");
+            assert_eq!(via_set.record.burst_boost, via_file.record.burst_boost, "{speed}");
+        }
+        // the top-level `speed` alone leaves what the condition derives from the speed at SP
+        let only_speed = run_params("", &["speed=lp"]);
+        assert!(only_speed.speed != sp.speed && only_speed.heads[0].width_um == sp.heads[0].width_um);
+    }
+
+    #[test]
+    fn a_condition_set_is_merged_into_the_condition_table_of_the_file() {
+        let file = "[condition]\ntape_speed = \"ep\"\nhead_wear = 0.9\n[tape]\npasses = 2.0\n";
+        let sets = vec!["condition.tape_speed=lp".to_string(), "condition.deck_age_years=30".to_string(), "tape.defects_per_mm2=0.1".to_string()];
+        let (text, overrides, _) = assemble_config(file, &sets, None).unwrap();
+        let condition = condition_of(&text);
+        assert_eq!(condition["tape_speed"].as_str(), Some("lp"), "a --set wins over the file");
+        assert_eq!(condition["head_wear"].as_float(), Some(0.9), "the file's other keys stay");
+        assert_eq!(condition["deck_age_years"].as_integer(), Some(30));
+        let table: toml::Table = toml::from_str(&text).unwrap();
+        assert_eq!(table["tape"]["passes"].as_float(), Some(2.0));
+        // only the items that are not for the condition are left as overrides
+        assert_eq!(overrides, "tape.defects_per_mm2 = 0.1\n");
+        // without a `[condition]` in the file the table is created
+        let (text, overrides, _) = assemble_config("[tape]\npasses = 2.0\n", &["condition.tape_speed=ep".to_string()], None).unwrap();
+        assert_eq!(condition_of(&text)["tape_speed"].as_str(), Some("ep"));
+        assert_eq!(overrides, "");
+        // a `condition` that is not a table cannot take the items
+        assert!(assemble_config("condition = 5\n", &["condition.tape_speed=lp".to_string()], None).is_err());
+    }
+
+    #[test]
+    fn seed_and_standard_sets_go_into_the_text_and_the_rest_stay_overrides() {
+        let file = "[tape]\ndefects_per_mm2 = 0.1\n";
+        let sets = vec!["seed=7".to_string(), "standard=pal60".to_string(), "tape.passes=3".to_string()];
+        let (text, overrides, standard) = assemble_config(file, &sets, None).unwrap();
+        assert!(standard == TvStandard::Pal60);
+        let table: toml::Table = toml::from_str(&text).unwrap();
+        assert_eq!(table["seed"].as_integer(), Some(7));
+        assert_eq!(table["standard"].as_str(), Some("pal60"));
+        assert_eq!(table["tape"]["defects_per_mm2"].as_float(), Some(0.1));
+        assert!(!table.contains_key(CONDITION_TABLE));
+        assert_eq!(overrides, "tape.passes = 3\n");
+        // the flag wins over a `--set standard`, and the text says so
+        let (text, _, standard) = assemble_config("", &["standard=pal60".to_string()], Some(StandardArg::Ntsc)).unwrap();
+        assert!(standard == TvStandard::Ntsc);
+        assert_eq!(toml::from_str::<toml::Table>(&text).unwrap()["standard"].as_str(), Some("ntsc"));
+        // nothing for the text: the file is passed on as it is, comments and all
+        let file = "# my tape\n[tape]\npasses = 2.0\n";
+        let (text, overrides, standard) = assemble_config(file, &["tape.defects_per_mm2=0.2".to_string()], None).unwrap();
+        assert_eq!((text.as_str(), overrides.as_str()), (file, "tape.defects_per_mm2 = 0.2\n"));
+        assert!(standard == TvStandard::Ntsc);
+        assert!(assemble_config("", &["standard=secam".to_string()], None).is_err());
+    }
+
+    #[test]
+    fn a_missing_automation_file_is_reported_before_anything_is_started() {
+        // the programs do not exist: only a check that comes before probing and encoding reports the file
+        let cli = Cli::try_parse_from([
+            "vhsphys",
+            "run",
+            "in.mp4",
+            "out.mp4",
+            "--automate",
+            "/nonexistent/automation.json",
+            "--ffmpeg",
+            "/nonexistent/ffmpeg",
+            "--ffprobe",
+            "/nonexistent/ffprobe",
+        ])
+        .unwrap();
+        let Cmd::Run(a) = cli.cmd else { panic!("expected Run command") };
+        let err = run_engine::<Ntsc525>(a, TvStandard::Ntsc, "", "").unwrap_err().to_string();
+        assert!(err.starts_with("loading automation file '/nonexistent/automation.json'"), "{err}");
+    }
+
+    #[test]
+    fn printed_arguments_are_quoted_for_a_shell() {
+        assert_eq!(shell_quote("clip_vhs.mp4"), "clip_vhs.mp4");
+        assert_eq!(shell_quote("condition.tape_speed=lp"), "condition.tape_speed=lp");
+        assert_eq!(shell_quote("/mnt/tapes/a-b,c@d%e:f+g.mp4"), "/mnt/tapes/a-b,c@d%e:f+g.mp4");
+        assert_eq!(shell_quote("/tmp/my clip.webm"), "'/tmp/my clip.webm'");
+        assert_eq!(shell_quote("it's.mp4"), "'it'\\''s.mp4'");
+        assert_eq!(shell_quote(""), "''");
+        assert_eq!(shell_quote("a;b$c"), "'a;b$c'");
+        // what a shell makes of the quoted word is the word
+        #[cfg(unix)]
+        for arg in ["clip_vhs.mp4", "/tmp/my clip.webm", "it's.mp4", "a;b$c \"d\" `e`", ""] {
+            let out = Command::new("sh").arg("-c").arg(format!("printf %s {}", shell_quote(arg))).output().unwrap();
+            assert_eq!(String::from_utf8_lossy(&out.stdout), arg);
+        }
+    }
+
+    #[test]
+    fn the_default_output_keeps_only_an_extension_the_run_can_write() {
+        for (input, output) in [
+            ("clip.mp4", "clip_vhs.mp4"),
+            ("clip.mkv", "clip_vhs.mkv"),
+            ("clip.mov", "clip_vhs.mov"),
+            ("clip.m4v", "clip_vhs.m4v"),
+            ("clip.MKV", "clip_vhs.MKV"),
+            ("photo.png", "photo_vhs.png"),
+            ("photo.JPEG", "photo_vhs.JPEG"),
+            ("photo.tif", "photo_vhs.tif"),
+            ("clip.webm", "clip_vhs.mp4"),
+            ("clip.avi", "clip_vhs.mp4"),
+            ("clip.WEBM", "clip_vhs.mp4"),
+            ("clip", "clip_vhs.mp4"),
+            ("some/dir/clip.ogv", "clip_vhs.mp4"),
+            ("some/dir/clip.mov", "clip_vhs.mov"),
+        ] {
+            assert_eq!(default_output_name(Path::new(input)), output, "{input}");
+        }
+        assert!(has_extension(Path::new("a.PNG"), &IMAGE_EXTENSIONS) && !has_extension(Path::new("a.mp4"), &IMAGE_EXTENSIONS));
+        assert!(!has_extension(Path::new("png"), &IMAGE_EXTENSIONS));
+    }
+
+    #[test]
+    fn the_input_is_not_taken_for_a_different_output() {
+        let dir = std::env::temp_dir().join(format!("vhsphys-cli-same-file-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let input = dir.join("in.mp4");
+        let other = dir.join("other.mp4");
+        std::fs::write(&input, b"x").unwrap();
+        std::fs::write(&other, b"y").unwrap();
+        assert!(same_file(&input, &input));
+        // the same file under another spelling
+        assert!(same_file(&input, &dir.join("sub").join("..").join("in.mp4")));
+        assert!(!same_file(&input, &other));
+        // an output that does not exist is not the input
+        assert!(!same_file(&input, &dir.join("new.mp4")));
+        #[cfg(unix)]
+        {
+            let link = dir.join("link.mp4");
+            std::os::unix::fs::symlink(&input, &link).unwrap();
+            assert!(same_file(&input, &link));
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn wizard_numbers_must_be_numbers() {
+        assert_eq!(parse_iris_stops("2.0"), Some(2.0));
+        assert_eq!(parse_iris_stops("-1.5"), Some(-1.5));
+        assert_eq!(parse_iris_stops("0"), Some(0.0));
+        for bad in ["", "two", "1,5", "inf", "-inf", "NaN"] {
+            assert_eq!(parse_iris_stops(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_generations("1"), Some(1));
+        assert_eq!(parse_generations(&MAX_GENERATIONS.to_string()), Some(MAX_GENERATIONS));
+        assert_eq!(parse_generations(WIZARD_GENERATIONS), Some(1));
+        for bad in ["", "0", "-1", "2.5", "three", "256", &(MAX_GENERATIONS as u32 + 1).to_string()] {
+            assert_eq!(parse_generations(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_iris_stops(WIZARD_IRIS_STOPS), Some(2.0));
     }
 }

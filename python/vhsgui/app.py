@@ -188,6 +188,20 @@ LOOK_HELP = {
 SCHEMATIC_MIN_WIDTH = 1240
 SCHEMATIC_MIN_HEIGHT = 880
 SCHEMATIC_BOTTOM_MAX_HEIGHT = 250
+# The strip under the schematic is a dark console dock that matches the canvases above it. Its text
+# has its own light colour, so it stays readable whatever the system theme is; the controls moved
+# in from the panels keep their own style and lose these colours when they move back.
+SCHEMATIC_DOCK_BG = "#15181e"
+SCHEMATIC_DOCK_BORDER = "#2b303c"
+SCHEMATIC_DOCK_TEXT = "#b8c0cc"
+SCHEMATIC_BOTTOM_STYLE = (
+    f"QWidget#schematicBottom {{ background-color: {SCHEMATIC_DOCK_BG}; border: 1px solid {SCHEMATIC_DOCK_BORDER};"
+    " border-radius: 4px; }"
+    " QWidget#schematicBottom QLabel, QWidget#schematicBottom QGroupBox, QWidget#schematicBottom QCheckBox,"
+    f" QWidget#schematicBottom QRadioButton {{ color: {SCHEMATIC_DOCK_TEXT}; }}"
+)
+# A plain widget's layout ignores the style sheet's border and padding, so the frame needs its own margin.
+SCHEMATIC_BOTTOM_MARGIN = 3
 # Page names are shared by the buttons and the command-line entry point.
 SCHEMATIC_CIRCUIT = "circuit"
 SCHEMATIC_OUTSIDE = "outside"
@@ -348,7 +362,7 @@ class DetachedPreviewWindow(QWidget):
         super().__init__(None, Qt.WindowType.Window)
         self._main = main_window
         self.setObjectName("detachedPreviewWindow")
-        self.setWindowTitle(f"{WINDOW_TITLE} — Preview")
+        self.setWindowTitle(f"{WINDOW_TITLE} - Preview")
         self.resize(*DETACHED_PREVIEW_SIZE)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -428,7 +442,7 @@ FLOW_SECTIONS: tuple[FlowSection, ...] = (
             ("record.luma_carrier_mhz", "Nominal sync-tip/white carrier (3.4-4.4 MHz NTSC, 3.8-4.8 MHz PAL)"),
             ("record.sub_emphasis", "Sub-emphasis network for LP/EP tape speeds"),
             ("record.chroma_level", "Colour-under amplitude injection ratio"),
-            ("speed", "Tape transport speed: SP, LP, EP (sets subcarrier interleave & track pitch)"),
+            ("speed", "Tape transport speed: SP, LP, EP (the heads, carrier interleave and sub-emphasis follow condition.tape_speed)"),
         ),
     ),
     FlowSection(
@@ -463,7 +477,7 @@ FLOW_SECTIONS: tuple[FlowSection, ...] = (
         parts=(
             ("Helical Track Matrix", "2D surface coordinates mapped onto 3.1 deg (NTSC) / 3.3 deg (PAL) angled tracks."),
             ("Oxide Defect Field", "Spatial Poisson point-process generating oxide dropouts, coating pinholes, and flake-offs."),
-            ("Tape Creases & Crinkles", "Mechanical edge crinkles and transport wrinkles generating periodic carrier loss."),
+            ("Tape Creases & Crinkles (Planned)", "Mechanical edge crinkles and transport wrinkles generating periodic carrier loss (planned)."),
             ("Magnetic Spacing Profile", "Surface roughness and microscopic debris creating dynamic spacing fluctuations."),
         ),
         equations=(
@@ -473,7 +487,7 @@ FLOW_SECTIONS: tuple[FlowSection, ...] = (
         ),
         parameters=(
             ("tape.defects_per_mm2", "Oxide defect density triggering dropout compensation"),
-            ("tape.crinkle_density_per_m", "Longitudinal creasing density per meter of tape"),
+            ("tape.crinkle_density_per_m (planned)", "Longitudinal creasing density per meter of tape (planned)"),
             ("tape.roughness_um", "Surface roughness inducing magnetic spacing noise"),
         ),
     ),
@@ -1308,9 +1322,15 @@ class MainWindow(QMainWindow):
 
     def _build_schematic_bottom(self) -> None:
         self._schematic_bottom = QWidget()
+        self._schematic_bottom.setObjectName("schematicBottom")
+        # a plain widget paints a style sheet background only when asked to
+        self._schematic_bottom.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._schematic_bottom.setStyleSheet(SCHEMATIC_BOTTOM_STYLE)
         self._schematic_bottom.setMaximumHeight(SCHEMATIC_BOTTOM_MAX_HEIGHT)
         layout = QGridLayout(self._schematic_bottom)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(
+            SCHEMATIC_BOTTOM_MARGIN, SCHEMATIC_BOTTOM_MARGIN, SCHEMATIC_BOTTOM_MARGIN, SCHEMATIC_BOTTOM_MARGIN
+        )
         layout.setSpacing(4)
         activity = QWidget()
         activity_layout = QVBoxLayout(activity)
@@ -2214,13 +2234,16 @@ class MainWindow(QMainWindow):
         self._preview_layout.removeWidget(self._preview_placeholder)
         self._preview_placeholder.setVisible(False)
         self._preview_layout.insertWidget(0, self.preview, 1)
-        self.preview.setVisible(self._panels_area.isVisible())
+        # The panels area decides whether the preview shows: hiding it here would leave it hidden
+        # after a return from the schematic view.
+        self.preview.setVisible(True)
         self._is_preview_detached = False
         self.popout_button.setText("Pop out")
 
     def show_about_dialog(self) -> None:
         dialog = AboutDialog(self)
         dialog.exec()
+        dialog.deleteLater()  # the main window is its parent, so it would otherwise live until the window closes
 
     def _toggle_view(self) -> None:
         if self.processed_frames is None:

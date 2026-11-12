@@ -14,11 +14,21 @@
 //! playback equaliser (high-pass, low-pass at a corner proportional to the tape speed),
 //! with hiss entering before the equaliser -> hum (one supply for all channels) -> clip.
 //!
+//! With `hifi` on and the head following its track (the lock is decided once, from the
+//! tracking offset, slope and bow, see `hifi_tracking_threshold_um`) the sound comes instead
+//! from the frequency-modulated carriers on the helical tracks: recorded at constant level
+//! (no level control or saturation), not limited by the tape speed, mostly freed of the
+//! capstan's speed error by the drum servo, with only a small share of the hiss and hum, and
+//! without the audio head, its spacing loss and the tape-edge dropouts. What the rotating
+//! heads add is the head-switch buzz at the field rate. A head that is off its track falls
+//! back to the linear track.
+//!
 //! Every time-dependent quantity is a pure function of the absolute sample index, so a
 //! processor can start anywhere in the programme and any split of the input gives the
 //! same output.
 
 use crate::dsp::{lagrange3, Biquad};
+use super::consts::{FRAME_RATE, TRACK_PITCH_UM};
 use super::head::HeadParams;
 use super::interference::{audio_add, audio_gain};
 use crate::interference_params::InterferenceParams;
@@ -26,6 +36,7 @@ use super::mech::Mech;
 use super::pipeline::Params;
 use crate::rng::Rng;
 use super::tape::{Kind, Tape};
+use super::tracking::TrackingParams;
 use serde::{Deserialize, Serialize};
 use std::f64::consts::PI;
 
@@ -51,6 +62,15 @@ const Q_BUTTER: f64 = std::f64::consts::FRAC_1_SQRT_2;
 /// Picture CNR (dB, `heads[*].cnr_db`) and media AM noise at which the hiss level parameters apply.
 const CNR_REF_DB: f64 = 40.0;
 const MEDIA_REF: f64 = 0.02;
+/// Share of the capstan's delay deviation that reaches the Hi-Fi carriers: the drum servo
+/// follows the capstan, so only what it leaves over is heard.
+const HIFI_DELAY_SHARE: f64 = 0.05;
+/// Share of the linear track's hiss in the Hi-Fi output (the carriers are far above the tape noise).
+const HIFI_HISS_SHARE: f64 = 0.05;
+/// Share of the supply hum in the Hi-Fi output (the carriers are frequency modulated, so ripple barely reaches them).
+const HIFI_HUM_SHARE: f64 = 0.1;
+/// Decay time of the head-switch transient, seconds.
+const HEAD_SWITCH_DECAY_S: f64 = 0.0004;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -109,6 +129,17 @@ pub struct AudioParams {
     /// Amplitude of the mains fundamental relative to the second harmonic (the transformer's
     /// stray field, not the rectified ripple). [est]
     pub hum_fundamental: f64,
+
+    // ---- hi-fi depth-multiplex audio ----
+    /// When true, models depth-multiplexed rotating Hi-Fi audio heads (default: false = linear track only).
+    pub hifi: bool,
+    /// Amplitude of the 59.94/50 Hz head-switch transient buzz (nominal 0.002 = -54 dB).
+    pub head_switch_buzz: f64,
+    /// Tracking threshold in micrometres above which the Hi-Fi carrier unlocks and falls back to linear
+    /// audio. It is compared with the worst displacement of the head from the track centre along the
+    /// track (from the tracking offset, slope and bow). The figure is in micrometres at the SP track
+    /// pitch and scales with the narrower track pitch at LP and EP.
+    pub hifi_tracking_threshold_um: f64,
 }
 
 impl Default for AudioParams {
@@ -133,6 +164,9 @@ impl Default for AudioParams {
             transport_step: 16,
             hum_per_ire: 1.3e-4,
             hum_fundamental: 0.4,
+            hifi: false,
+            head_switch_buzz: 0.002,
+            hifi_tracking_threshold_um: 18.0,
         }
     }
 }
@@ -365,6 +399,22 @@ fn track_band(c: usize, channels: usize) -> (f64, f64) {
     }
 }
 
+/// Largest distance (um) of the head from the centre of its track along one track. The head
+/// follows the law of `tracking::lateral_weights` without the random per-track wander:
+/// `y(s) = offset + slope (s - 1/2) + 4 bow s (1 - s)` for `s` in [0, 1] from the start to the
+/// end of the track. `|y|` peaks at an end of the track or at the stationary point of the bow.
+fn worst_lateral_um(t: &TrackingParams) -> f64 {
+    let y = |s: f64| t.offset_um + t.slope_um * (s - 0.5) + 4.0 * t.bow_um * s * (1.0 - s);
+    let mut worst = y(0.0).abs().max(y(1.0).abs());
+    if t.bow_um != 0.0 {
+        let s = 0.5 + t.slope_um / (8.0 * t.bow_um);
+        if s > 0.0 && s < 1.0 {
+            worst = worst.max(y(s).abs());
+        }
+    }
+    worst
+}
+
 // ---------------------------------------------------------------- processor
 
 /// Per-channel state.
@@ -385,6 +435,10 @@ pub struct AudioProcessor {
     a: AudioParams,
     rate: f64,
     channels: usize,
+    /// The Hi-Fi carriers are read (decided once from the tracking and the track pitch).
+    hifi_locked: bool,
+    /// Samples per field, the period of the head-switch buzz.
+    field_period: f64,
     mech: Mech,
     tape: Tape,
     loss: SpacingLoss,
@@ -439,6 +493,11 @@ impl AudioProcessor {
         // The head's output voltage is proportional to the tape speed, the hiss is not.
         let sigma = (s_head * s_head + s_tape * s_tape).sqrt() / ratio;
 
+        // The Hi-Fi tracks are as wide as the recording speed's track pitch, so the same threshold
+        // (given at the SP pitch) is a smaller distance at LP and EP.
+        let limit = a.hifi_tracking_threshold_um * p.speed.track_pitch_um() / TRACK_PITCH_UM;
+        let hifi_locked = a.hifi && worst_lateral_um(&p.tracking) < limit;
+
         let max_dev = a.max_delay_ms.max(0.0) * 1e-3;
         let chan = (0..channels)
             .map(|c| Chan {
@@ -454,6 +513,8 @@ impl AudioProcessor {
         let mut s = Self {
             rate,
             channels,
+            hifi_locked,
+            field_period: rate / (2.0 * FRAME_RATE),
             mech: Mech::new(p.mech.clone(), p.seed),
             tape: Tape::new(p.tape.clone(), p.seed),
             loss,
@@ -616,44 +677,70 @@ impl AudioProcessor {
         }
         let mut chans = std::mem::take(&mut self.chan);
         let (drive, bias) = (self.a.sat_drive.max(1e-3), self.bias);
+        let hifi_locked = self.hifi_locked;
         let mut rec = vec![0.0f32; len];
         let mut z = vec![0.0f32; len];
         let mut w = vec![0.0f32; len];
         let mut hiss = vec![0.0f32; len];
         for (c, st) in chans.iter_mut().enumerate() {
-            // 1. record: level control and tape saturation
+            // 1. record: level control and tape saturation; the Hi-Fi carrier is frequency
+            //    modulated and recorded at constant amplitude, so neither applies to it
             for i in 0..len {
                 let v = x[i * ch + c];
                 let v = if v.is_finite() { v as f64 } else { 0.0 };
-                rec[i] = saturate(st.alc.tick(v), drive, bias) as f32;
+                rec[i] = if hifi_locked { v as f32 } else { saturate(st.alc.tick(v), drive, bias) as f32 };
             }
             // 2. the capstan's speed error: a variable delay, shared by all channels
             let h = st.hist_rec.len();
-            let mut buf = Vec::with_capacity(h + len);
-            buf.extend_from_slice(&st.hist_rec);
-            buf.extend_from_slice(&rec);
+            let mut buf_rec = Vec::with_capacity(h + len);
+            buf_rec.extend_from_slice(&st.hist_rec);
+            buf_rec.extend_from_slice(&rec);
             for i in 0..len {
-                z[i] = read_delayed(&buf, h + i, delays[i]);
+                let d = if hifi_locked {
+                    let d_dev = delays[i] - self.base_delay as f64;
+                    self.base_delay as f64 + d_dev * HIFI_DELAY_SHARE
+                } else {
+                    delays[i]
+                };
+                z[i] = read_delayed(&buf_rec, h + i, d);
             }
-            st.hist_rec.copy_from_slice(&buf[len..]);
-            // 3. spacing loss and dropouts, centred on the sample `FIR_HALF` back
-            let fields = self.defect_fields(c, n0 - FIR_HALF as i64, len);
+            st.hist_rec.copy_from_slice(&buf_rec[len..]);
+            // 3. spacing loss and dropouts, centred on the sample `FIR_HALF` back. The Hi-Fi
+            //    carriers are on the helical tracks, so the audio band's defects and the audio
+            //    head's spacing do not touch them; they only keep the same delay.
             let mut buf = Vec::with_capacity(2 * FIR_HALF + len);
             buf.extend_from_slice(&st.hist_z);
             buf.extend_from_slice(&z);
-            self.loss.apply(&buf, fields.as_ref().map(|f| (&f.0[..], &f.1[..])), &mut w);
-            if let Some((_, _, mag)) = &fields {
-                w.iter_mut().zip(mag).for_each(|(a, m)| *a *= m);
+            if !hifi_locked {
+                let fields = self.defect_fields(c, n0 - FIR_HALF as i64, len);
+                self.loss.apply(&buf, fields.as_ref().map(|f| (&f.0[..], &f.1[..])), &mut w);
+                if let Some((_, _, mag)) = &fields {
+                    w.iter_mut().zip(mag).for_each(|(a, m)| *a *= m);
+                }
             }
             let keep = buf.len() - 2 * FIR_HALF;
             st.hist_z.copy_from_slice(&buf[keep..]);
             // 4. head response and playback equaliser; the hiss and the pick-up at the head enter
             //    before the equaliser, the hum and what enters after the filters follow it
             st.noise.fill(n0, &mut hiss);
-            for i in 0..len {
-                let s = st.hp.tick(w[i] as f64 * tape_gain) + st.shelf.tick(hiss[i] as f64 * self.sigma + pre_eq[i]);
-                let y = st.lp.tick(s) + hum[i] + post_eq[i];
-                out[i * ch + c] = y.clamp(-1.0, 1.0) as f32;
+            if hifi_locked {
+                // The audio head and its preamplifier are not in the Hi-Fi path: no `pre_eq`.
+                for i in 0..len {
+                    let k = n0 + i as i64;
+                    let phase = (k as f64).rem_euclid(self.field_period);
+                    let buzz = (-(phase / (HEAD_SWITCH_DECAY_S * self.rate))).exp() * self.a.head_switch_buzz;
+
+                    let sig = buf[FIR_HALF + i] as f64 * tape_gain;
+                    let hifi_hiss = hiss[i] as f64 * self.sigma * HIFI_HISS_SHARE;
+                    let y = sig + hifi_hiss + hum[i] * HIFI_HUM_SHARE + post_eq[i] + buzz;
+                    out[i * ch + c] = y.clamp(-1.0, 1.0) as f32;
+                }
+            } else {
+                for i in 0..len {
+                    let s = st.hp.tick(w[i] as f64 * tape_gain) + st.shelf.tick(hiss[i] as f64 * self.sigma + pre_eq[i]);
+                    let y = st.lp.tick(s) + hum[i] + post_eq[i];
+                    out[i * ch + c] = y.clamp(-1.0, 1.0) as f32;
+                }
             }
         }
         self.chan = chans;
@@ -823,6 +910,65 @@ mod tests {
         assert!(l.iter().all(|a| *a >= 0.0));
         p.tape.defects_per_mm2 = 0.0;
         assert!(AudioProcessor::new(&p, 48_000.0, 2).defect_fields(0, 0, 96_000).is_none());
+    }
+
+    #[test]
+    fn the_worst_lateral_distance_is_at_an_end_or_at_the_peak_of_the_bow() {
+        let t = |offset_um: f64, slope_um: f64, bow_um: f64| TrackingParams { offset_um, slope_um, bow_um, wander_um: 0.0 };
+        for (tp, want) in [
+            (t(5.0, 0.0, 0.0), 5.0),
+            (t(0.0, 10.0, 0.0), 5.0),
+            // 12 um at both ends, 20 um in the middle
+            (t(12.0, 0.0, 8.0), 20.0),
+            (t(-3.0, 0.0, 8.0), 5.0),
+            (t(0.0, 0.0, -8.0), 8.0),
+            // the peak of the bow is beyond the end of the track: the end decides
+            (t(0.0, 20.0, 4.0), 10.0),
+            // the peak is inside the track but off its middle
+            (t(0.0, 8.0, 8.0), 8.5),
+        ] {
+            let got = worst_lateral_um(&tp);
+            assert!((got - want).abs() < 1e-9, "{tp:?}: {got} vs {want}");
+        }
+        // the same law as `tracking::lateral_weights`, scanned along the track
+        for (offset, slope, bow) in [(1.0, -30.0, 6.0), (-7.0, 15.0, -9.0), (3.0, 2.0, 12.0), (0.0, 0.0, 0.0), (-20.0, 4.0, 1.0)] {
+            let tp = t(offset, slope, bow);
+            let scanned = (0..=10_000).map(|i| i as f64 / 10_000.0).map(|s| (offset + slope * (s - 0.5) + 4.0 * bow * s * (1.0 - s)).abs()).fold(0.0, f64::max);
+            let got = worst_lateral_um(&tp);
+            assert!(got >= scanned - 1e-9 && got - scanned < 1e-3, "{tp:?}: {got} vs {scanned}");
+        }
+    }
+
+    #[test]
+    fn the_hifi_lock_follows_the_track_pitch_of_the_recording_speed() {
+        use super::super::format::TapeSpeed;
+        let mut p = params("pristine", 1);
+        p.audio.hifi = true;
+        p.tracking = TrackingParams::default();
+        for speed in TapeSpeed::ALL {
+            p.speed = speed;
+            let limit = p.audio.hifi_tracking_threshold_um * speed.track_pitch_um() / TRACK_PITCH_UM;
+            p.tracking.offset_um = 0.9 * limit;
+            assert!(AudioProcessor::new(&p, 48_000.0, 1).hifi_locked, "{speed:?}: inside the track");
+            p.tracking.offset_um = -1.1 * limit;
+            assert!(!AudioProcessor::new(&p, 48_000.0, 1).hifi_locked, "{speed:?}: on the neighbouring track");
+            p.audio.hifi = false;
+            p.tracking.offset_um = 0.0;
+            assert!(!AudioProcessor::new(&p, 48_000.0, 1).hifi_locked, "{speed:?}: Hi-Fi is off");
+            p.audio.hifi = true;
+        }
+    }
+
+    #[test]
+    fn a_bad_tape_keeps_its_hifi_sound_and_a_ruined_one_loses_it() {
+        // the sign of the stretch slope is drawn from the seed, so try a few
+        for seed in 1..9 {
+            for (preset, locked) in [("worn", true), ("bad", true), ("ruined", false)] {
+                let mut p = params(preset, seed);
+                p.audio.hifi = true;
+                assert_eq!(AudioProcessor::new(&p, 48_000.0, 1).hifi_locked, locked, "{preset}, seed {seed}");
+            }
+        }
     }
 
     #[test]

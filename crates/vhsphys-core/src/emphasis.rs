@@ -47,6 +47,9 @@ const LP_FIGURES: SubEmphasisParams =
 /// high-pass to meet the table.
 const EP_FIGURES: SubEmphasisParams =
     SubEmphasisParams { hp_hz: 1.05e6, lp_hz: 2.62e6, gain: 3.28, clip_ire: 17.1, post_hp_hz: 0.0 };
+/// Figures for VHS HQ non-linear luminance noise reduction (SP mode, US Patent 4,597,021).
+pub const HQ_FIGURES: SubEmphasisParams =
+    SubEmphasisParams { hp_hz: 800.0e3, lp_hz: 0.0, gain: 1.5, clip_ire: 6.0, post_hp_hz: 0.0 };
 
 /// The figures of the network.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]

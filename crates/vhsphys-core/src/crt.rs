@@ -12,6 +12,7 @@
 
 use super::consts::{ACTIVE_H, ACTIVE_START, ACTIVE_W, BB_PER_LINE, FH, LINES};
 use crate::dsp::sample_cubic;
+use rayon::prelude::*;
 use super::interference::{approach_scale, dipole_field, electron_momentum, mains_waveform, E_CHARGE};
 use crate::interference_params::*;
 use super::video::{decode_ideal, row_to_line, ycc_to_rgb, Baseband, Frame};
@@ -31,6 +32,11 @@ const GRID_H: usize = 36;
 
 /// Fixed-point steps that invert `s + d(s) = q` for the source point `s` of an output point `q`.
 const INVERSION_STEPS: usize = 6;
+
+/// The inversion stops once a step moves the aim point by less than this many pixels along both axes: far from a magnet the
+/// field is nearly uniform and the first step already lands there, so the remaining steps would only reshuffle the last
+/// bits of the aim point.
+const INVERSION_TOLERANCE_PX: f32 = 1.0e-3;
 
 /// Damping factor on later fixed-point inversion steps so steep dipole gradients near a close magnet
 /// converge smoothly instead of oscillating ("crinkling").
@@ -157,39 +163,18 @@ pub fn scan_to_frame(bb: &Baseband, k: i64, p: &InterferenceParams) -> Frame {
     let mut frame = Frame::new(ACTIVE_W, ACTIVE_H);
     let screen = Screen::new(ACTIVE_W, ACTIVE_H, &p.crt);
     let grids = DisplacementGrids::new(p, k, &screen);
-    let mut combined = vec![[0.0f32; 2]; GRID_W * GRID_H];
     let limit_px = MAX_SHIFT_SCREENS * ACTIVE_W as f64;
-    for row in 0..ACTIVE_H {
-        let stray = stray_field_t(p, line_time_s(k, row));
-        grids.combine(stray, limit_px, &mut combined);
-        let field = GridField::new(&combined, &screen);
-        let out = &mut frame.rgb[row * ACTIVE_W * 3..(row + 1) * ACTIVE_W * 3];
-        render_row_baseband(out, bb, &screen, &field, row);
-    }
+    // Every row is scanned at its own time and needs nothing from its neighbours, so they can be rendered side by side.
+    frame.rgb.par_chunks_mut(ACTIVE_W * 3).enumerate().for_each_init(
+        || vec![[0.0f32; 2]; GRID_W * GRID_H],
+        |combined, (row, out)| {
+            let stray = stray_field_t(p, line_time_s(k, row));
+            grids.combine(stray, limit_px, combined);
+            let field = GridField::new(combined, &screen);
+            render_row_baseband(out, bb, &screen, &field, row);
+        },
+    );
     frame
-}
-
-/// Apply the tube's response to a decoded frame: every pixel shows what the beam aimed at it would show where it really
-/// lands (a displacement field `displacement_m` per row time, converted from metres to pixels with the screen size),
-/// scaled in brightness by the inverse of the local area change (beams that crowd together are brighter), and the colours mixed
-/// by `purity_matrix` of the horizontal shift (averaged over the pixel when the shift changes by more than a stripe within it).
-/// Rows of pixels that no beam reaches are black. Does nothing, bit for bit, when `!p.crt_on()`.
-pub fn apply(frame: &mut Frame, k: i64, p: &InterferenceParams) {
-    if !p.crt_on() || frame.w < 2 || frame.h < 2 {
-        return;
-    }
-    let screen = Screen::new(frame.w, frame.h, &p.crt);
-    let grids = DisplacementGrids::new(p, k, &screen);
-    let source: Vec<f32> = frame.rgb.iter().map(|&v| v as f32).collect();
-    let mut combined = vec![[0.0f32; 2]; GRID_W * GRID_H];
-    let limit_px = MAX_SHIFT_SCREENS * frame.w as f64;
-    for row in 0..frame.h {
-        let stray = stray_field_t(p, line_time_s(k, row));
-        grids.combine(stray, limit_px, &mut combined);
-        let field = GridField::new(&combined, &screen);
-        let out = &mut frame.rgb[row * frame.w * 3..(row + 1) * frame.w * 3];
-        render_row_f32(out, &source, &screen, &field, row);
-    }
 }
 
 // ------------------------------------------------------------------------- the beam's path
@@ -463,41 +448,48 @@ impl<'a> GridField<'a> {
         self.nodes[jc * GRID_W + ic]
     }
 
-    /// C1-continuous Catmull-Rom bicubic interpolation of the displacement `d` and its exact
-    /// analytic Jacobian `jac` so cell boundaries never create step discontinuities in
-    /// beam-crowding brightness gain or phosphor stripe slope.
-    fn sample(&self, col: f32, row: f32) -> LocalShift {
+    /// The grid cell holding grid-space point `(col, row)` pixels (clamped to the grid): the indices of its first node and
+    /// the fractions across it.
+    #[inline]
+    fn locate(&self, col: f32, row: f32) -> (isize, isize, f32, f32) {
         let gx = (col * self.cells_per_px[0]).clamp(0.0, (GRID_W - 1) as f32);
         let gy = (row * self.cells_per_px[1]).clamp(0.0, (GRID_H - 1) as f32);
         let i = (gx.floor() as isize).min((GRID_W - 2) as isize);
         let j = (gy.floor() as isize).min((GRID_H - 2) as isize);
-        let tx = gx - i as f32;
-        let ty = gy - j as f32;
+        (i, j, gx - i as f32, gy - j as f32)
+    }
 
-        let wx = [
-            tx * (tx * (-0.5 * tx + 1.0) - 0.5),
-            tx * tx * (1.5 * tx - 2.5) + 1.0,
-            tx * (tx * (-1.5 * tx + 2.0) + 0.5),
-            tx * tx * (0.5 * tx - 0.5),
-        ];
-        let dwx = [
-            -1.5 * tx * tx + 2.0 * tx - 0.5,
-            4.5 * tx * tx - 5.0 * tx,
-            -4.5 * tx * tx + 4.0 * tx + 0.5,
-            1.5 * tx * tx - tx,
-        ];
-        let wy = [
-            ty * (ty * (-0.5 * ty + 1.0) - 0.5),
-            ty * ty * (1.5 * ty - 2.5) + 1.0,
-            ty * (ty * (-1.5 * ty + 2.0) + 0.5),
-            ty * ty * (0.5 * ty - 0.5),
-        ];
-        let dwy = [
-            -1.5 * ty * ty + 2.0 * ty - 0.5,
-            4.5 * ty * ty - 5.0 * ty,
-            -4.5 * ty * ty + 4.0 * ty + 0.5,
-            1.5 * ty * ty - ty,
-        ];
+    /// Catmull-Rom weights of the four nodes around a point `t` of the way across the middle cell.
+    #[inline]
+    fn weights(t: f32) -> [f32; 4] {
+        [
+            t * (t * (-0.5 * t + 1.0) - 0.5),
+            t * t * (1.5 * t - 2.5) + 1.0,
+            t * (t * (-1.5 * t + 2.0) + 0.5),
+            t * t * (0.5 * t - 0.5),
+        ]
+    }
+
+    /// Derivatives of `weights` with respect to `t`.
+    #[inline]
+    fn weight_slopes(t: f32) -> [f32; 4] {
+        [
+            -1.5 * t * t + 2.0 * t - 0.5,
+            4.5 * t * t - 5.0 * t,
+            -4.5 * t * t + 4.0 * t + 0.5,
+            1.5 * t * t - t,
+        ]
+    }
+
+    /// C1-continuous Catmull-Rom bicubic interpolation of the displacement `d` and its exact
+    /// analytic Jacobian `jac` so cell boundaries never create step discontinuities in
+    /// beam-crowding brightness gain or phosphor stripe slope.
+    fn sample(&self, col: f32, row: f32) -> LocalShift {
+        let (i, j, tx, ty) = self.locate(col, row);
+        let wx = Self::weights(tx);
+        let dwx = Self::weight_slopes(tx);
+        let wy = Self::weights(ty);
+        let dwy = Self::weight_slopes(ty);
 
         let mut d = [0.0f32; 2];
         let mut jac = [[0.0f32; 2]; 2];
@@ -519,23 +511,50 @@ impl<'a> GridField<'a> {
         }
         LocalShift { d, jac }
     }
+
+    /// Only the displacement of `sample`, with the same arithmetic in the same order so that the value is bit for bit
+    /// the same: the fixed-point inversion needs nothing else until its last point, and the Jacobian is most of the work.
+    fn sample_displacement(&self, col: f32, row: f32) -> [f32; 2] {
+        let (i, j, tx, ty) = self.locate(col, row);
+        let wx = Self::weights(tx);
+        let wy = Self::weights(ty);
+
+        let mut d = [0.0f32; 2];
+        for m in 0..4 {
+            let mut row_val = [0.0f32; 2];
+            for n in 0..4 {
+                let p = self.node(i + n as isize - 1, j + m as isize - 1);
+                for c in 0..2 {
+                    row_val[c] += wx[n] * p[c];
+                }
+            }
+            for c in 0..2 {
+                d[c] += wy[m] * row_val[c];
+            }
+        }
+        d
+    }
 }
 
 /// Invert `s + d(s) = q` for the aim point `s` of a beam landing at `q`, using damped fixed-point
-/// iteration so steep magnetic field gradients converge without oscillating.
+/// iteration so steep magnetic field gradients converge without oscillating. Only the displacement is
+/// needed on the way; the full sample with its Jacobian is taken once, at the aim point found.
 #[inline]
 fn invert_beam_aim(field: &GridField, q: [f32; 2]) -> ([f32; 2], LocalShift) {
-    let mut local = field.sample(q[0], q[1]);
-    let mut s = [q[0] - local.d[0], q[1] - local.d[1]];
+    let d = field.sample_displacement(q[0], q[1]);
+    let mut s = [q[0] - d[0], q[1] - d[1]];
     for step in 1..INVERSION_STEPS {
-        local = field.sample(s[0], s[1]);
-        let target = [q[0] - local.d[0], q[1] - local.d[1]];
+        let d = field.sample_displacement(s[0], s[1]);
+        let target = [q[0] - d[0], q[1] - d[1]];
         let alpha = if step == 1 { 1.0 } else { INVERSION_DAMPING };
-        s[0] += alpha * (target[0] - s[0]);
-        s[1] += alpha * (target[1] - s[1]);
+        let moved = [alpha * (target[0] - s[0]), alpha * (target[1] - s[1])];
+        s[0] += moved[0];
+        s[1] += moved[1];
+        if moved[0].abs() < INVERSION_TOLERANCE_PX && moved[1].abs() < INVERSION_TOLERANCE_PX {
+            break;
+        }
     }
-    local = field.sample(s[0], s[1]);
-    (s, local)
+    (s, field.sample(s[0], s[1]))
 }
 
 /// Fill output row `row` directly from the continuous `Baseband` scanlines `(y, cu, cv)` at
@@ -601,49 +620,78 @@ fn sample_baseband_gun(bb: &Baseband, screen: &Screen, s: [f32; 2]) -> [f32; 3] 
     ]
 }
 
-/// Fill output row `row` from the continuous floating-point gun signal `source` (and write the
-/// quantised `u8` video pixel only at the very end): for each pixel invert `s + d(s) = q`,
-/// sample the continuous gun signal there, and apply the brightness gain and stripe mixing.
-fn render_row_f32(out: &mut [u8], source: &[f32], screen: &Screen, field: &GridField, row: usize) {
-    let stripes_per_px = 1.0 / screen.px_per_stripe as f32;
-    for (col, px) in out.chunks_exact_mut(3).enumerate() {
-        let q = [col as f32, row as f32];
-        let (s, local) = invert_beam_aim(field, q);
-        let rgb = sample_source_f32(source, screen, s);
-        let weights = mean_permutation_weights(local.d[0] * stripes_per_px, local.jac[0][0] * stripes_per_px);
-        let mixed = mix_colours(weights, rgb);
-        let gain = local.gain();
-        for c in 0..3 {
-            px[c] = (mixed[c] * gain).round().clamp(0.0, 255.0) as u8;
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-/// Bilinear sample of the continuous floating-point gun drive at point `s`; outside the active
-/// raster there is no electron beam, so black.
-fn sample_source_f32(source: &[f32], screen: &Screen, s: [f32; 2]) -> [f32; 3] {
-    let (w, h) = (screen.w as i64, screen.h as i64);
-    let x0f = s[0].floor();
-    let y0f = s[1].floor();
-    let fx = s[0] - x0f;
-    let fy = s[1] - y0f;
-    let (x0, y0) = (x0f as i64, y0f as i64);
-    if x0 < -1 || y0 < -1 || x0 >= w || y0 >= h {
-        return [0.0; 3];
-    }
-    let tap = |x: i64, y: i64| -> [f32; 3] {
-        if x < 0 || y < 0 || x >= w || y >= h {
-            return [0.0; 3];
+    /// Peak displacement of the test grid, pixels, and the wavelength of its ripple across the picture: gentle enough that the
+    /// inversion converges, steep enough that a point does not land where it was aimed.
+    const RIPPLE_PX: f32 = 6.0;
+    const RIPPLE_WAVELENGTH_PX: f32 = 300.0;
+
+    /// Probe points (columns and rows) spread over the picture and a little beyond it, where the grid is clamped.
+    const PROBE_COLS: usize = 37;
+    const PROBE_ROWS: usize = 29;
+    const PROBE_MARGIN_PX: f32 = 20.0;
+
+    fn ripple_grid(screen: &Screen) -> Vec<[f32; 2]> {
+        let k = std::f32::consts::TAU / RIPPLE_WAVELENGTH_PX;
+        let mut nodes = Vec::with_capacity(GRID_W * GRID_H);
+        for j in 0..GRID_H {
+            for i in 0..GRID_W {
+                let [col, row] = screen.node_pixel(i, j);
+                nodes.push([RIPPLE_PX * (k * (col as f32 + 0.7 * row as f32)).sin(), RIPPLE_PX * (k * (row as f32 - 0.4 * col as f32)).cos()]);
+            }
         }
-        let at = ((y * w + x) * 3) as usize;
-        [source[at], source[at + 1], source[at + 2]]
-    };
-    let (p00, p10, p01, p11) = (tap(x0, y0), tap(x0 + 1, y0), tap(x0, y0 + 1), tap(x0 + 1, y0 + 1));
-    let mut rgb = [0.0f32; 3];
-    for c in 0..3 {
-        let top = p00[c] + fx * (p10[c] - p00[c]);
-        let bottom = p01[c] + fx * (p11[c] - p01[c]);
-        rgb[c] = top + fy * (bottom - top);
+        nodes
     }
-    rgb
+
+    fn probes(screen: &Screen) -> Vec<[f32; 2]> {
+        let (w, h) = (screen.w as f32, screen.h as f32);
+        let mut points = Vec::new();
+        for r in 0..PROBE_ROWS {
+            for c in 0..PROBE_COLS {
+                let col = -PROBE_MARGIN_PX + (w + 2.0 * PROBE_MARGIN_PX) * c as f32 / (PROBE_COLS - 1) as f32;
+                let row = -PROBE_MARGIN_PX + (h + 2.0 * PROBE_MARGIN_PX) * r as f32 / (PROBE_ROWS - 1) as f32;
+                points.push([col, row]);
+            }
+        }
+        points
+    }
+
+    #[test]
+    fn the_displacement_alone_is_bit_for_bit_the_displacement_of_the_full_sample() {
+        let screen = Screen::new(ACTIVE_W, ACTIVE_H, &CrtParams::default());
+        let nodes = ripple_grid(&screen);
+        let field = GridField::new(&nodes, &screen);
+        for [col, row] in probes(&screen) {
+            let full = field.sample(col, row).d;
+            let alone = field.sample_displacement(col, row);
+            assert_eq!([full[0].to_bits(), full[1].to_bits()], [alone[0].to_bits(), alone[1].to_bits()], "at ({col}, {row})");
+        }
+    }
+
+    #[test]
+    fn stopping_when_converged_finds_the_aim_point_of_the_full_iteration() {
+        let screen = Screen::new(ACTIVE_W, ACTIVE_H, &CrtParams::default());
+        let nodes = ripple_grid(&screen);
+        let field = GridField::new(&nodes, &screen);
+        for q in probes(&screen) {
+            // all the steps, each with the full sample
+            let mut local = field.sample(q[0], q[1]);
+            let mut s = [q[0] - local.d[0], q[1] - local.d[1]];
+            for step in 1..INVERSION_STEPS {
+                local = field.sample(s[0], s[1]);
+                let alpha = if step == 1 { 1.0 } else { INVERSION_DAMPING };
+                s[0] += alpha * (q[0] - local.d[0] - s[0]);
+                s[1] += alpha * (q[1] - local.d[1] - s[1]);
+            }
+            let (found, at) = invert_beam_aim(&field, q);
+            assert!((found[0] - s[0]).abs() < INVERSION_TOLERANCE_PX && (found[1] - s[1]).abs() < INVERSION_TOLERANCE_PX, "{q:?}: {found:?} against {s:?}");
+            // the local shift is the full sample at the point found
+            let again = field.sample(found[0], found[1]);
+            assert_eq!(at.d, again.d);
+            assert_eq!(at.jac, again.jac);
+        }
+    }
 }

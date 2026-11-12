@@ -16,19 +16,20 @@ Active tasks in the current development cycle:
 
 Physical tape, deck, and circuit features planned for implementation in `vhsphys-core` (physics and circuit theory detailed in `docs/PHYSICAL_MODELLING_RESEARCH.md`):
 
-- **Non-linear noise reduction (HQ decks, SP only)**: High-pass path feeding a back-to-back diode limiter (US4597021A / US3944853) added to the FM signal, with a closed-form inverse filter on playback.
+- **Non-linear noise reduction (HQ decks, SP only)**: High-pass path feeding a back-to-back diode limiter (US4597021A / US3944853) added to the FM signal, with a closed-form inverse filter on playback. *(Completed; switch `hq = true`)*
 - **Magnetic recording beyond the saturating relay**: Transition broadening via a switching-field distribution / Preisach model ($M(H) = M_s \tanh((H \pm H_c)/\Delta H_c)$), generating high-frequency recording loss and self-demagnetisation directly from physical state.
-- **Head pole-tip contour ("head bumps")**: Edge flux coupling on finite 50-100 um pole tips below 1 MHz, affecting colour-under (629 kHz) and linear audio low-end.
-- **Closed-loop chroma PLL**: Heterodyning colour-under through an analog phase detector, lag-lead loop filter, and VCO locked to burst to capture unlock hue smear, tape stretch, and head-switch phase jumps.
-- **True 59.94 / 50 fps field-sequential input**: Mapping each incoming field to its own helical pass to model true interlace comb filtering on moving video.
-- **Hi-Fi depth-multiplex audio**: Dual FM audio carriers (1.3 / 1.7 MHz) recorded by a second pair of rotating heads buried beneath the video layer, including head-switch buzz (59.94 Hz) and tracking-loss fallback muting.
+- **Head pole-tip contour ("head bumps")**: Edge flux coupling on finite 50-100 um pole tips below 1 MHz, affecting colour-under (629 kHz) and linear audio low-end. *(Completed)*
+- **Closed-loop chroma PLL**: Heterodyning colour-under through an analog phase detector, lag-lead loop filter, and VCO locked to burst to capture unlock hue smear, tape stretch, and head-switch phase jumps. *(Completed)*
+- **True 59.94 / 50 fps field-sequential input**: Mapping each incoming field to its own helical pass to model true interlace comb filtering on moving video. *(Completed)*
+- **Hi-Fi depth-multiplex audio**: Dual FM audio carriers (1.3 / 1.7 MHz) recorded by a second pair of rotating heads buried beneath the video layer, including head-switch buzz (59.94 Hz) and tracking-loss fallback muting. *(Completed)*
 
 ## 3. Long-term goals
 
 Tooling, workflow integration, and usability improvements:
 
 - **Parameter automation in standalone application and plugin preparation**:
-  - Time-varying parameter curves (JSON/TOML/CSV keyframing or timeline automation) for the standalone app and CLI to model dynamic tracking drift, progressive head clogging, crinkles, and camera iris exposure changes over time. *(Completed)*
+  - Time-varying parameter curves (JSON/TOML/CSV keyframing or timeline automation) for the standalone app and CLI to model dynamic tracking drift, progressive head clogging, tension variations, and camera iris exposure changes over time. *(Completed)*
+  - Mechanical tape crinkles and transport creases. *(Planned)*
   - Per-frame and per-field parameter updating in `pipeline::Session` and `Chain` (`--automate <FILE>`). *(Completed)*
 - **Cleaner user interface (PySide6 GUI and tools)**:
   - Streamlined controls, grouping deck vs. transport vs. tape physical parameters.

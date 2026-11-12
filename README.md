@@ -74,7 +74,7 @@ humidity, mains, tracking, tension ...) that the laws in
 | recording deck age | emphasis mismatch, chroma level, FM modulator asymmetry in what was *written* |
 
 Any raw parameter can be overridden (`--set tape.defects_per_mm2=0.03`,
-`--set head1.extra_spacing_um=0.9`, `[tape]`/`[deck]`/... tables in a config
+`--set head1.extra_spacing_um=0.9`, `--set hq=true`, `[tape]`/`[deck]`/... tables in a config
 file). `[condition]` in a config file refines the preset before it is mapped.
 
 ## Television standards
@@ -219,7 +219,7 @@ sound, the hum bars and the dimmer marks move from frame to frame, and the singl
 
 ### Tape speed
 
-Set in a config file (`[condition]` / `tape_speed = "lp"`; `--set` cannot reach the `[condition]` table) or with the window's "Tape speed" menu (`sp`, `lp`, `ep`). Track pitch is 58 / 28.9 / 19.3 um; the extra noise, crosstalk and tighter tracking tolerance of LP and EP follow from the narrower tracks. LP and EP also follow the format's own record rules: one head's FM carrier sits half a line frequency above the other's, so adjacent-track crosstalk alternates from line to line and the display's comb cancels it, and the colour burst is not doubled at LP (details in `docs/TAPE_SPEEDS.md`).
+Set in a config file (`[condition]` / `tape_speed = "lp"`), on the command line with `--set condition.tape_speed=lp`, or with the window's "Tape speed" menu (`sp`, `lp`, `ep`). Track pitch is 58 / 28.9 / 19.3 um; the extra noise, crosstalk and tighter tracking tolerance of LP and EP follow from the narrower tracks. LP and EP also follow the format's own record rules: one head's FM carrier sits half a line frequency above the other's, so adjacent-track crosstalk alternates from line to line and the display's comb cancels it, and the colour burst is not doubled at LP (details in `docs/TAPE_SPEEDS.md`).
 
 ![source, SP, LP, EP with a 5 um tracking error](docs/img/features_speed_fractal.jpg)
 
@@ -339,8 +339,7 @@ cd python && ../.venv/bin/python -m pytest -q tests
   S-VHS are not.
 * Input is treated as a progressive source (the two fields of a frame come from
   the same image); there is no 59.94 fps field output yet.
-* The luma noise canceller of HQ decks (SP, playback only), Hi-Fi audio and print-through are not
-  modelled.
+* Print-through and the luma line-delay noise canceller are not modelled.
 * The ageing laws and several defaults are engineering estimates (tagged `[est]`
   in the source and notes) and are meant to be tuned against real tapes.
 
@@ -377,18 +376,18 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for full notes and physics references.
 * **Schematic UI integration**: Television standard, camera tube selection, and conditional spec displays in the PySide6 schematic view.
 
 ### Near-term physical modelling
-* **HQ non-linear noise reduction** (SP only): Diode limiter circuit on pre-emphasised signal with inverse filter on playback.
+* **HQ non-linear noise reduction** (SP only): Diode limiter circuit on pre-emphasised signal with inverse filter on playback (`hq = true`). *(Completed)*
 * **Magnetic recording beyond the relay**: Switching-field distribution / Preisach hysteresis ($M(H) = M_s \tanh((H \pm H_c)/\Delta H_c)$).
-* **Head pole-tip contour ("head bumps")**: Edge flux coupling below 1 MHz affecting colour-under (629 kHz) and audio.
-* **Closed-loop chroma PLL**: Analog phase detector, loop filter, and burst-locked VCO for realistic unlock smear and head-switch phase jumps.
-* **True 59.94 / 50 fps field-sequential input**: Independent field-to-pass mapping for genuine moving interlace comb filtering.
-* **Hi-Fi depth-multiplex audio**: Dual FM audio carriers (1.3 / 1.7 MHz) with separate rotating head pair, switching buzz, and fallback muting.
+* **Head pole-tip contour ("head bumps")**: Edge flux coupling below 1 MHz affecting colour-under (629 kHz) and audio. *(Completed)*
+* **Closed-loop chroma PLL**: Analog phase detector, loop filter, and burst-locked VCO for realistic unlock smear and head-switch phase jumps. *(Completed)*
+* **True 59.94 / 50 fps field-sequential input**: Independent field-to-pass mapping for genuine moving interlace comb filtering. *(Completed)*
+* **Hi-Fi depth-multiplex audio**: Dual FM audio carriers (1.3 / 1.7 MHz) with separate rotating head pair, switching buzz, and fallback muting. *(Completed)*
 
 ### Long-term goals
-* **Parameter automation**: Time-varying keyframes and automation curves in the standalone app/CLI; per-frame parameter updates in preparation for plugin automation.
+* **Parameter automation**: Time-varying keyframes and automation curves in the standalone app/CLI; per-frame parameter updates in preparation for plugin automation. *(Completed; mechanical crinkles planned)*
 * **Cleaner UI**: Refined PySide6 desktop interface, grouped physical controls, dark schematic dock layout, and real-time parameter validation.
-* **Walkthrough shell version**: Interactive terminal wizard (`vhsphys wizard`) to guide options without verbose command lines.
-* **Separate viewing window**: Detachable / floating preview viewport for multi-monitor workflows.
+* **Walkthrough shell version**: Interactive terminal wizard (`vhsphys wizard`) to guide options without verbose command lines. *(Completed)*
+* **Separate viewing window**: Detachable / floating preview viewport for multi-monitor workflows. *(Completed)*
 * **Support button & easter eggs**: Period-authentic deck easter eggs (dew sensor trip, tape eject jam, retro OSD modes).
 
 ### Ultra-long-term goals

@@ -29,6 +29,12 @@ use super::record::{line_rotation, pal60_switched, v_switched, CU_WHOLE_CYCLES_P
 use super::video::{write_standard_burst, Baseband, Frame};
 use std::f64::consts::PI;
 
+// The chroma PLL `freq += k_i err; phi += freq + k_p err` has the characteristic polynomial
+// `z^2 - (2 - k_p - k_i) z + (1 - k_p)` and settles only for `0 < k_p < 2` and `0 < k_i < 4 - 2 k_p`;
+// above `k_p = 1` it rings with alternating sign from line to line. The gains from `pll_omega_n`
+// and `pll_zeta` are taken as given, so a mis-set loop makes the hue jump and ring as a badly
+// adjusted deck does. Only negative or NaN figures are taken as 0 (`f64::max` maps NaN to 0).
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DecodeParams {
@@ -38,6 +44,15 @@ pub struct DecodeParams {
     /// Per-line smoothing of the APC phase and ACC gain estimates (1 = follow
     /// every burst measurement, small = slow loops as in a real deck).
     pub apc_alpha: f64,
+    /// Whether chroma APC uses a closed-loop second-order PLL (false = first-order leaky integration).
+    pub chroma_pll: bool,
+    /// Natural frequency omega_n of the loop filter in line units. The loop settles up to about
+    /// 0.7 at the nominal damping; larger figures are taken as given and make the hue ring or
+    /// jump from line to line, as a mis-adjusted deck does.
+    pub pll_omega_n: f64,
+    /// Loop damping ratio zeta (nominal ~0.707). A negative figure acts as 0.
+    pub pll_zeta: f64,
+    /// Per-line smoothing of the ACC gain estimate (1 = follow every burst measurement).
     pub acc_alpha: f64,
     pub acc_max_gain: f64,
     /// Colour killer: burst magnitude below this fraction of nominal mutes colour.
@@ -67,6 +82,9 @@ impl Default for DecodeParams {
             clamp: true,
             comb: true,
             apc_alpha: 0.2,
+            chroma_pll: false,
+            pll_omega_n: 0.25,
+            pll_zeta: 0.707,
             acc_alpha: 0.1,
             acc_max_gain: 8.0,
             kill_threshold: 0.18,
@@ -272,12 +290,17 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
     let (cre, cim) = demod_chroma(view, cstart, clen, p);
     let cat = |n: f64, c: &[f32]| -> f32 { sample_cubic(c, n - cstart as f64) };
 
+    // the PLL's gains as configured (the same for every line); see the note at the top
+    let pll_kp = (2.0 * p.pll_zeta * p.pll_omega_n).max(0.0);
+    let pll_ki = (p.pll_omega_n * p.pll_omega_n).max(0.0);
+
     let mut planes = Baseband::blank();
     // the outside world's terms for the pixels of the current line, filled once per line
     let (mut gain_line, mut add_line) = (vec![0.0f32; ACTIVE_W], vec![0.0f32; ACTIVE_W]);
     for field in 0..2 {
         let mut s_est = 0.0f64;
         let (mut phi_s, mut g_s) = (0.0f64, 0.0f64);
+        let mut freq_s = 0.0f64;
         let mut chroma_lines: Vec<Vec<[f32; 2]>> = Vec::with_capacity(FIELD_ACTIVE_LINES);
         let mut luma_lines: Vec<Vec<f32>> = Vec::with_capacity(FIELD_ACTIVE_LINES);
         for j in 0..FIELD_ACTIVE_LINES {
@@ -313,16 +336,28 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
             // the deck's APC compares the burst with the angle it should have on this line
             let phi = bi.atan2(br) - burst_angle(line);
             let wrap = |a: f64| (a + PI).rem_euclid(2.0 * PI) - PI;
+            let killed = bmag < p.kill_threshold * p.burst_nominal;
             if j == 0 {
                 phi_s = wrap(phi);
+                freq_s = 0.0;
                 g_s = (p.burst_nominal / bmag.max(1e-9)).ln();
             } else {
-                phi_s += p.apc_alpha * wrap(wrap(phi) - phi_s);
+                if p.chroma_pll {
+                    if !killed {
+                        let err = wrap(wrap(phi) - phi_s);
+                        freq_s += pll_ki * err;
+                        phi_s = wrap(phi_s + freq_s + pll_kp * err);
+                    } else {
+                        // Open-loop freewheeling during burst dropout
+                        phi_s = wrap(phi_s + freq_s);
+                    }
+                } else {
+                    phi_s += p.apc_alpha * wrap(wrap(phi) - phi_s);
+                }
                 let g = (p.burst_nominal / bmag.max(1e-9)).ln();
                 g_s += p.acc_alpha * (g - g_s);
             }
             let gain = g_s.exp().min(p.acc_max_gain);
-            let killed = bmag < p.kill_threshold * p.burst_nominal;
             let (cr, sr) = ((-phi_s).cos(), (-phi_s).sin());
             // ACC brings the burst to its nominal demodulated size; that size
             // corresponds to a recorded burst of BURST_AMP * boost, so this

@@ -229,9 +229,11 @@ impl Condition {
                 tape_age_years: 25.0, tape_storage: 0.5, tape_quality: 0.5, tape_passes: 6.0, tape_stretch: 0.2, head_wear: 0.4, head_clog: 0.15,
                 drum_wear: 0.3, deck_age_years: 28.0, deck_temp_c: 60.0, deck_humidity: 0.5, tracking_error_um: 6.0, rec_deck_age_years: 25.0, ..d
             },
+            // tracking offset and stretch keep the head's worst excursion at 17 um, inside the 18 um
+            // the Hi-Fi carrier needs, so a bad tape still plays Hi-Fi sound; `ruined` loses it
             "bad" => Self {
-                tape_age_years: 32.0, tape_storage: 0.75, tape_quality: 0.35, tape_passes: 3.0, tape_stretch: 0.45, head_wear: 0.5, head_clog: 0.3,
-                drum_wear: 0.5, deck_age_years: 34.0, deck_temp_c: 66.0, deck_humidity: 0.7, mains_sag: 0.05, tracking_error_um: 10.0,
+                tape_age_years: 32.0, tape_storage: 0.75, tape_quality: 0.35, tape_passes: 3.0, tape_stretch: 0.4, head_wear: 0.5, head_clog: 0.3,
+                drum_wear: 0.5, deck_age_years: 34.0, deck_temp_c: 66.0, deck_humidity: 0.7, mains_sag: 0.05, tracking_error_um: 7.0,
                 tension_error: -0.4, rec_deck_age_years: 32.0, rec_deck_temp_c: 62.0, ..d
             },
             "ruined" => Self {
@@ -405,7 +407,8 @@ impl Condition {
         r.relay_threshold *= 1.0 + 0.10 * self.head_wear * g().abs();
 
         // the LP and EP sub-emphasis: recorder and player both hold the format's figures, so the
-        // playback network is the exact inverse of the recorded one (no drift modelled yet)
+        // playback network is the exact inverse of the recorded one (no drift modelled yet).
+        // HQ decks are a switch on the equipment (`Params::hq`), decided in `config::build`.
         p.record.sub_emphasis = SubEmphasisParams::for_speed(self.tape_speed);
         p.deck.sub_deemphasis = SubEmphasisParams::for_speed(self.tape_speed);
         p
