@@ -17,6 +17,27 @@ this page shows where each is ahead.
 | Controls | dozens of direct sliders (head-switching height, tracking-noise height, ...), JSON presets | 21 physical knobs (years, deg C, um) plus any raw parameter; look files |
 | Origin | algorithms of composite-video-simulator, zhuker/ntsc and ntscQT | closed-form head physics, the VHS standard's figures, estimates tagged `[est]` |
 
+## No pixel-space filtering
+
+A filter chain works on decoded frames: blur kernels, shifted colour channels, noise laid over
+the picture. vhs-phys has no 2D blur and no filter on a frame. Every process acts on the
+one-dimensional signal in time, and the RGB frame is written once, when the picture tube model scans
+the baseband (`crt::scan_to_frame`).
+
+Horizontal softness has three physical sources:
+1. Circuit bandwidth along the line: the record and playback low-passes leave about 3 MHz of luma
+   and about 500 kHz of colour-under chroma. Vertical resolution is the raster's (525 or 625 lines),
+   not a filter.
+2. The head and the tape: each magnetisation reversal reads back as a Lorentzian pulse whose
+   half-width grows with the gap, the transition length and the head-to-tape spacing; its spectrum
+   is `exp(-k h)`, so spacing loss (Wallace's law) is a consequence of the pulse, not a separate
+   filter.
+3. The picture tube: the beam's landing position is computed from the fields at the tube and the
+   baseband line is sampled there by cubic interpolation.
+
+Ringing, smear and streaks are therefore the step responses of those circuits, not effects added
+afterwards.
+
 ## Where vhs-phys is ahead
 
 - **One cause, several symptoms.** A clogged head loses signal through spacing loss, trips the
@@ -28,7 +49,8 @@ this page shows where each is ahead.
   above. Its settings list has none of these.
 - **Sound.** The linear audio track shares the picture's physics: wow from the same capstan error,
   hum from the same supply ripple, bandwidth from the tape speed, dropouts from the same defect
-  statistics. ntsc-rs has no audio (its FAQ points to the Chow Tape Model plugin).
+  statistics. ntsc-rs has no audio (its FAQ points to the Chow Tape Model plugin). Hi-Fi audio is
+  available as a simplified model (`audio.hifi`).
 - **Tape speeds from geometry.** LP and EP are narrower tracks (28.9 and 19.3 um): the noise, the
   crosstalk and the tighter tracking tolerance follow. ntsc-rs lowers two low-pass cut-offs.
 - **Dubbing.** `--generations N` re-records through a different deck and tape each time.
@@ -51,9 +73,8 @@ this page shows where each is ahead.
 
 ## Neither has
 
-- PAL (nothing found in ntsc-rs's settings or docs; vhs-phys is NTSC only so far), S-VHS.
+- S-VHS.
 - Validation against real captures of the format.
-- Hi-Fi audio (vhs-phys models the linear track only).
 
 ## Using both
 

@@ -163,6 +163,14 @@ time and picture position. With one engine and direct links a `Rack` gives the f
   the demodulated burst size (ACC reference) and the chroma path delay (the
   deck's luma delay line); worn parts then deviate from an aligned deck, as in
   life.
+* **Recursive filters model circuits, on signals only.** All IIR filters are biquads in transposed
+  direct form II, 64-bit, designed by the bilinear transform with prewarping (`dsp::Biquad`,
+  `dsp::butter_lp`). Each stands for a network of the deck: the main emphasis and de-emphasis
+  (1.3 us, ratio 5) and the LP/EP and HQ sub-emphasis with its level-dependent limiter and exact
+  inverse on playback; the head resonance as a peaking section (`head::head_front_end`);
+  Butterworth low-passes for record luma and chroma, the demodulator output and the chroma after
+  demodulation; the coupling capacitor as a one-pole high-pass (15 Hz), which gives line tilt and
+  sag. None is applied to a frame.
 
 ## Geometry (tape.rs, tracking.rs)
 
@@ -200,7 +208,7 @@ To preview an excerpt, the backend runs the CLI with `--start` beginning a few f
   and the eighth-of-a-turn carrier rotation (`record::v_switched`, `record::line_rotation`), the
   deck's burst reference and 2H comb and the television (`decode`), the slow-speed rules
   (`ST32_SLOW_SPEED_RULES`), EP (`HAS_EP`) and the mains (`MAINS_HZ_DEFAULT`). PAL-60 is the
-  `ntsc` engine with a PAL television (`decode`, `record::pal60_switched`). Composite PAL is
-  still to come.
+  `ntsc` engine with a PAL television (`decode`, `record::pal60_switched`). Composite video is
+  modelled for all three standards (`composite`).
 * S-VHS: FM 5.4-7.0 MHz, 1.6 MHz deviation, extra sub-emphasis, a higher RF
   sample rate.
