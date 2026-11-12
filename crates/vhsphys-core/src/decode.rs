@@ -29,6 +29,10 @@ use super::record::{line_rotation, pal60_switched, v_switched, CU_WHOLE_CYCLES_P
 use super::video::{write_standard_burst, Baseband, Frame};
 use std::f64::consts::PI;
 
+// Keep the ACC aperture inside the settled centre of each format's burst.
+pub(crate) const BURST_MEASURE_LEN: usize = if BURST_LEN < 36 { 12 } else { 20 };
+pub(crate) const BURST_MEASURE_START: usize = BURST_START + (BURST_LEN - BURST_MEASURE_LEN) / 2;
+
 // The chroma PLL `freq += k_i err; phi += freq + k_p err` has the characteristic polynomial
 // `z^2 - (2 - k_p - k_i) z + (1 - k_p)` and settles only for `0 < k_p < 2` and `0 < k_i < 4 - 2 k_p`;
 // above `k_p = 1` it rings with alternating sign from line to line. The gains from `pll_omega_n`
@@ -325,13 +329,13 @@ pub fn decode_planes(k: i64, view: &StreamView, p: &DecodeParams, itf: &Interfer
             }
             // burst measurement (complex mean over the burst middle)
             let (mut br, mut bi) = (0.0f64, 0.0f64);
-            let b0 = (s_blank_ref + 88.0 + p.chroma_delay).round() as i64;
-            for i in 0..20 {
-                let idx = (b0 + i - cstart) as usize;
+            let b0 = (s_blank_ref + BURST_MEASURE_START as f64 + p.chroma_delay).round() as i64;
+            for i in 0..BURST_MEASURE_LEN {
+                let idx = (b0 + i as i64 - cstart) as usize;
                 br += cre[idx.min(clen - 1)] as f64;
                 bi += cim[idx.min(clen - 1)] as f64;
             }
-            let (br, bi) = (br / 20.0, bi / 20.0);
+            let (br, bi) = (br / BURST_MEASURE_LEN as f64, bi / BURST_MEASURE_LEN as f64);
             let bmag = (br * br + bi * bi).sqrt();
             // the deck's APC compares the burst with the angle it should have on this line
             let phi = bi.atan2(br) - burst_angle(line);

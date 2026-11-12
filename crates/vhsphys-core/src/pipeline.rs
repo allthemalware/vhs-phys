@@ -16,7 +16,7 @@ use super::camera::{CameraParams, CameraTube};
 use super::composite::CompositeParams;
 use super::consts::*;
 use super::crt;
-use super::decode::{decode_baseband, demod_chroma, DecodeParams, StreamView};
+use super::decode::{decode_baseband, demod_chroma, DecodeParams, StreamView, BURST_MEASURE_LEN, BURST_MEASURE_START};
 use super::electronics::{process_segment, DeckParams};
 use super::format::TapeSpeed;
 use super::head::*;
@@ -396,13 +396,13 @@ pub fn calibrate(p: &Params) -> Calibration {
     let chroma_delay = centroid - (BURST_START + BURST_LEN / 2) as f64;
     let (mut acc, mut cnt) = (0.0, 0);
     for l in 2..28 {
-        let b0 = 200 + l * BB_PER_LINE + 88 + chroma_delay.round() as usize;
+        let b0 = 200 + l * BB_PER_LINE + BURST_MEASURE_START + chroma_delay.round() as usize;
         let (mut br, mut bi) = (0.0f64, 0.0f64);
-        for i in 0..20 {
+        for i in 0..BURST_MEASURE_LEN {
             br += re[b0 + i] as f64;
             bi += im[b0 + i] as f64;
         }
-        acc += (br * br + bi * bi).sqrt() / 20.0;
+        acc += (br * br + bi * bi).sqrt() / BURST_MEASURE_LEN as f64;
         cnt += 1;
     }
     rf.clear();
