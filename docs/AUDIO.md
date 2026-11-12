@@ -91,8 +91,18 @@ specified around 0.1 to 0.2 %).
 | hum, `dry-caps` / `pristine` | -48 / -111 dBFS |
 | speed (one thread) | 300 s of stereo in 2.5 to 3.8 s, 80 to 120 times real time |
 
+## Hi-Fi
+
+Hi-Fi audio is modelled as an option, off by default: `--set audio.hifi=true` (config: `[audio]` / `hifi = true`). It is a simplified model, not a carrier model: with Hi-Fi on, the sound takes 5 % of the capstan's wow and flutter (the drum servo follows the capstan), 5 % of the linear track's hiss and 10 % of the supply hum; a head-switch buzz at the field rate (59.94 or 50 Hz) is added, amplitude `audio.head_switch_buzz` (default 0.002, -54 dB), decaying in 0.4 ms; when the worst displacement of the head from the track centre exceeds `audio.hifi_tracking_threshold_um` (default 18 um at SP, scaled with the track pitch at LP and EP) the deck falls back to the linear track. The carrier level per field from the tracking weights and the tape's defects is not modelled yet.
+
+| parameter | default | meaning |
+|---|---|---|
+| `audio.hifi` | `false` | Enable the simplified Hi-Fi audio model |
+| `audio.head_switch_buzz` | `0.002` | Amplitude of the field-rate head-switch buzz (-54 dB, decays in 0.4 ms) |
+| `audio.hifi_tracking_threshold_um` | `18.0` | Mistracking displacement threshold to fall back to the linear track (SP, scaled at LP/EP) |
+
 ## Limits
 
 Defects in the tape's video area (creases, edge curl) do not reach the audio band. Dropouts on the wide mono track are shallow: a disc of at most 800 um across covers at
 most 0.8 of the 1000 um band, so the highs fall by about 4 dB at best. The loss filter is a 49-tap approximation of the exponential: within about 1.5 dB for lifts up to 1.4 um at SP, understating the low-frequency loss of deeper ones. The SMPS ripple (38 kHz) is
-above the audio band and is not coupled. Hi-Fi audio is not modelled.
+above the audio band and is not coupled.

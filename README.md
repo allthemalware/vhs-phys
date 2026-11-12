@@ -104,10 +104,10 @@ an error.
   "PAL-60" in `docs/PAL.md`.
 
 The standard decides which of the two engines in the core runs, so it also decides what is
-accepted: EP is refused in `pal` (the 625-line format has no EP), and composite output is
-refused with a PAL television (`pal` and `pal60`), because the composite stage is an NTSC encoder
-and decoder. Both are errors on standard error and a nonzero exit, from a config file and from
-`--set` alike.
+accepted: EP is refused in `pal` (the 625-line format has no EP); composite output works with all
+three standards (3.58 MHz NTSC subcarrier for `ntsc`, 4.43 MHz PAL subcarrier with the V switch
+for `pal` and `pal60`). Refused settings are errors on standard error and a nonzero exit, from a
+config file and from `--set` alike.
 
 Everything else is the same in every standard. The output has the standard's frame rate whatever
 the input's (a 25 fps clip rendered as `ntsc` comes out at 29.97 fps). `--start` and `-t` count
@@ -245,13 +245,13 @@ profile = "bbc_four_field"
 
 ### Composite output
 
-Off by default (S-Video style). Enable with `--set composite.enabled=true --set composite.decoder=notch|comb1h|comb2h` or with the window's "Signal" menu. The deck's Y/C is summed onto the NTSC subcarrier and separated again like a TV does: a notch leaks fine luma detail into colour (rainbow), a comb leaks vertical colour edges into luma (hanging dots), and the dot pattern crawls from frame to frame (details in `docs/COMPOSITE.md`).
+Off by default (S-Video style). Enable with `--set composite.enabled=true --set composite.decoder=notch|comb1h|comb2h` or with the window's "Signal" menu. The deck's Y/C is summed onto the subcarrier of the television's colour system (3.58 MHz NTSC, 4.43 MHz PAL for `pal` and `pal60`) and separated again like a TV does: a notch leaks fine luma detail into colour (rainbow), a comb leaks vertical colour edges into luma (hanging dots), and the dot pattern crawls from frame to frame (details in `docs/COMPOSITE.md`).
 
 ![source, notch, comb1h, comb2h on a zone plate and a colour checkerboard](docs/img/features_composite_detail.jpg)
 
 ### Sound
 
-Set with `--audio process|copy|none` (default `process`; `copy` leaves the input audio as it was, `none` removes it) or in the window with "Sound" (previews never process sound). The linear audio track is simulated by the same tape and deck as the picture: wow and flutter come from the same capstan error as the picture's timebase, hum from the same supply ripple that makes hum bars, bandwidth from the tape speed (-3 dB at about 10 / 5 / 3.3 kHz at SP / LP / EP), hiss from tape and head noise (about 42 dB SNR on a good SP tape), and dropouts from the same defect statistics (details in `docs/AUDIO.md`). Hi-Fi audio is not modelled.
+Set with `--audio process|copy|none` (default `process`; `copy` leaves the input audio as it was, `none` removes it) or in the window with "Sound" (previews never process sound). The linear audio track is simulated by the same tape and deck as the picture: wow and flutter come from the same capstan error as the picture's timebase, hum from the same supply ripple that makes hum bars, bandwidth from the tape speed (-3 dB at about 10 / 5 / 3.3 kHz at SP / LP / EP), hiss from tape and head noise (about 42 dB SNR on a good SP tape), and dropouts from the same defect statistics (details in `docs/AUDIO.md`). Hi-Fi audio is modelled as an option, off by default: `--set audio.hifi=true` (config: `[audio]` / `hifi = true`). It is a simplified model with head-switch buzz and fallback to the linear track when tracking error exceeds a threshold.
 
 ## What is physically modelled
 
@@ -352,7 +352,7 @@ cd python && ../.venv/bin/python -m pytest -q tests
 * NTSC, PAL and PAL-60 are modelled (see [Television standards](#television-standards)); SECAM and
   S-VHS are not.
 * Input is treated as a progressive source (the two fields of a frame come from
-  the same image); there is no 59.94 fps field output yet.
+  the same image); there is no 59.94 fps field output yet. Field-sequential input exists in the core only (`Session::push_fields(f0, f1)`), while the command line tool still treats each input frame as progressive.
 * Print-through and the luma line-delay noise canceller are not modelled.
 * The ageing laws and several defaults are engineering estimates (tagged `[est]`
   in the source and notes) and are meant to be tuned against real tapes.
@@ -383,7 +383,6 @@ separate licence from the author.
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) for full notes and physics references.
 
 ### Currently being worked on
-* **Composite PAL**: 4.43 MHz PAL composite path (PAL 1H/2H comb filter) for `pal` and `pal60` standards.
 * **PAL deck tuning**: Playback equaliser and head resonance scaled to the PAL carrier; 58 um track pitch reference for CNR.
 * **Camera tube limits**: Build-up lag, light-bias tail, target saturation fitting at 50 Hz, and blooming/burn-in models (`docs/CAMERA.md`).
 * **Engine-generic audio I/O**: Generic CLI audio I/O across 525-line and 625-line engines and standard verification checks.
@@ -394,8 +393,8 @@ See [`docs/ROADMAP.md`](docs/ROADMAP.md) for full notes and physics references.
 * **Magnetic recording beyond the relay**: Switching-field distribution / Preisach hysteresis ($M(H) = M_s \tanh((H \pm H_c)/\Delta H_c)$).
 * **Head pole-tip contour ("head bumps")**: Edge flux coupling below 1 MHz affecting colour-under (629 kHz) and audio. *(Completed)*
 * **Closed-loop chroma PLL**: Analog phase detector, loop filter, and burst-locked VCO for realistic unlock smear and head-switch phase jumps. *(Completed)*
-* **True 59.94 / 50 fps field-sequential input**: Independent field-to-pass mapping for genuine moving interlace comb filtering. *(Completed)*
-* **Hi-Fi depth-multiplex audio**: Dual FM audio carriers (1.3 / 1.7 MHz) with separate rotating head pair, switching buzz, and fallback muting. *(Completed)*
+* **True 59.94 / 50 fps field-sequential input**: Independent field-to-pass mapping for genuine moving interlace comb filtering. *(core API `Session::push_fields` done; the command line tool still reads progressive frames)*
+* **Hi-Fi depth-multiplex audio**: Dual FM audio carriers (1.3 / 1.7 MHz) with separate rotating head pair, switching buzz, and fallback muting. *(simplified model done, `audio.hifi`; carrier model to do)*
 
 ### Long-term goals
 * **Parameter automation**: Time-varying keyframes and automation curves in the standalone app/CLI; per-frame parameter updates in preparation for plugin automation. *(Completed; mechanical crinkles planned)*

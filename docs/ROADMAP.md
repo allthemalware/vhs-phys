@@ -6,7 +6,6 @@ Development status and forward roadmap for `vhs-phys`.
 
 Active tasks in the current development cycle:
 
-- **Composite PAL** (`crates/vhsphys-core/src/composite.rs`): 4.43 MHz PAL composite path (PAL 1H/2H comb filter) for `pal` and `pal60` standards; removes the configuration restriction on composite video into a PAL television set.
 - **PAL deck tuning**: Playback equaliser and head resonance scaled to the PAL carrier (vhs-decode RF peak ~4.3 MHz vs 3.9 MHz for NTSC); normalised 58 um track pitch reference for carrier-to-noise ratio.
 - **Camera tube limits** (`docs/CAMERA.md`): Addressing low build-up lag, short light-bias tail, target saturation fitting at 50 Hz, and blooming / burn-in models.
 - **Engine-generic audio I/O**: Refactoring CLI audio I/O across 525-line and 625-line engines and standard verification checks in configuration overrides.
@@ -20,8 +19,8 @@ Physical tape, deck, and circuit features planned for implementation in `vhsphys
 - **Magnetic recording beyond the saturating relay**: Transition broadening via a switching-field distribution / Preisach model ($M(H) = M_s \tanh((H \pm H_c)/\Delta H_c)$), generating high-frequency recording loss and self-demagnetisation directly from physical state.
 - **Head pole-tip contour ("head bumps")**: Edge flux coupling on finite 50-100 um pole tips below 1 MHz, affecting colour-under (629 kHz) and linear audio low-end. *(Completed)*
 - **Closed-loop chroma PLL**: Heterodyning colour-under through an analog phase detector, lag-lead loop filter, and VCO locked to burst to capture unlock hue smear, tape stretch, and head-switch phase jumps. *(Completed)*
-- **True 59.94 / 50 fps field-sequential input**: Mapping each incoming field to its own helical pass to model true interlace comb filtering on moving video. *(Completed)*
-- **Hi-Fi depth-multiplex audio**: Dual FM audio carriers (1.3 / 1.7 MHz) recorded by a second pair of rotating heads buried beneath the video layer, including head-switch buzz (59.94 Hz) and tracking-loss fallback muting. *(Completed)*
+- **True 59.94 / 50 fps field-sequential input**: Mapping each incoming field to its own helical pass to model true interlace comb filtering on moving video. *(core API `Session::push_fields` done; the command line tool still reads progressive frames)*
+- **Hi-Fi depth-multiplex audio**: Dual FM audio carriers (1.3 / 1.7 MHz) recorded by a second pair of rotating heads buried beneath the video layer, including head-switch buzz (59.94 Hz) and tracking-loss fallback muting. *(simplified model done, `audio.hifi`; carrier model to do)*
 
 ## 3. Long-term goals
 
